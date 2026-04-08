@@ -1,0 +1,15 @@
+node_modules
+.next
+.next-dev
+.next-build
+dist
+build
+.turbo
+.DS_Store
+*.log
+coverage
+.env
+.env.local
+apps/api/.env
+apps/web/.env
+apps/extension/.env

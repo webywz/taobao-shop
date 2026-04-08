@@ -1,0 +1,17 @@
+{
+  "name": "tb-pdd-image-saas",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace @tb-pdd-image/web",
+    "dev:api": "npm run dev --workspace @tb-pdd-image/api",
+    "dev:extension": "npm run dev --workspace @tb-pdd-image/extension",
+    "build:web": "npm run build --workspace @tb-pdd-image/web",
+    "build:api": "npm run build --workspace @tb-pdd-image/api",
+    "build:extension": "npm run build --workspace @tb-pdd-image/extension",
+    "package:extension": "sh scripts/package-extension.sh"
+  }
+}
