@@ -1,11 +1,11 @@
-import { Body, Controller, Headers, Post } from "@nestjs/common"
+import { Body, Controller, Headers, Inject, Post } from "@nestjs/common"
 import type { CompleteUploadRequest, PresignUploadRequest } from "@tb-pdd-image/shared"
 
 import { DatabaseStore } from "../../common/store/database.store.js"
 
 @Controller("/v1/uploads")
 export class UploadsController {
-  constructor(private readonly store: DatabaseStore) {}
+  constructor(@Inject(DatabaseStore) private readonly store: DatabaseStore) {}
 
   @Post("presign")
   presign(@Body() body: PresignUploadRequest, @Headers("authorization") authorization?: string) {

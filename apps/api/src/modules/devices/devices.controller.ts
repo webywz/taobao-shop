@@ -1,4 +1,4 @@
-import { Body, Controller, Headers, Param, Post } from "@nestjs/common"
+import { Body, Controller, Headers, Inject, Param, Post } from "@nestjs/common"
 import type {
   BindLicenseRequest,
   HeartbeatRequest,
@@ -9,7 +9,7 @@ import { DatabaseStore } from "../../common/store/database.store.js"
 
 @Controller("/v1/devices")
 export class DevicesController {
-  constructor(private readonly store: DatabaseStore) {}
+  constructor(@Inject(DatabaseStore) private readonly store: DatabaseStore) {}
 
   @Post("register")
   register(@Body() body: RegisterDeviceRequest) {

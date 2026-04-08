@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   NotFoundException,
   OnModuleDestroy,
@@ -223,7 +224,7 @@ function getBearerToken(authorization?: string) {
 export class DatabaseStore implements OnModuleInit, OnModuleDestroy {
   private readonly pool: Pool
 
-  constructor(private readonly storage: OssStorageService) {
+  constructor(@Inject(OssStorageService) private readonly storage: OssStorageService) {
     this.pool = new Pool({
       connectionString: getDatabaseUrl()
     })

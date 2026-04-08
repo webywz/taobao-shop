@@ -1,11 +1,11 @@
-import { Body, Controller, Headers, Param, Post } from "@nestjs/common"
+import { Body, Controller, Headers, Inject, Param, Post } from "@nestjs/common"
 import type { ConvertAssetRequest } from "@tb-pdd-image/shared"
 
 import { DatabaseStore } from "../../common/store/database.store.js"
 
 @Controller("/v1/assets")
 export class AssetsController {
-  constructor(private readonly store: DatabaseStore) {}
+  constructor(@Inject(DatabaseStore) private readonly store: DatabaseStore) {}
 
   @Post(":assetId/convert")
   convert(

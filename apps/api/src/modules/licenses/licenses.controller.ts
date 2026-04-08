@@ -1,11 +1,11 @@
-import { Body, Controller, Get, Headers, Post } from "@nestjs/common"
+import { Body, Controller, Get, Headers, Inject, Post } from "@nestjs/common"
 import type { RedeemLicenseRequest } from "@tb-pdd-image/shared"
 
 import { DatabaseStore } from "../../common/store/database.store.js"
 
 @Controller("/v1/licenses")
 export class LicensesController {
-  constructor(private readonly store: DatabaseStore) {}
+  constructor(@Inject(DatabaseStore) private readonly store: DatabaseStore) {}
 
   @Post("redeem")
   redeem(@Body() body: RedeemLicenseRequest) {

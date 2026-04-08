@@ -13,7 +13,7 @@ import { API_BASE_URL } from "../shared/config"
 import { EXTRACTOR_VERSION, EXTENSION_VERSION } from "../shared/version"
 
 const POLL_ALARM_NAME = "task-poll"
-const TAB_LOAD_TIMEOUT_MS = 30000
+const TAB_LOAD_TIMEOUT_MS = 60000
 let pollInFlight = false
 
 function ensurePollAlarm() {
@@ -190,6 +190,45 @@ async function createHiddenTab(url: string) {
   })
 }
 
+function buildTaskPageUrl(task: QueuedTask) {
+  try {
+    const parsed = new URL(task.sourceUrl)
+
+    if (task.platform === "taobao") {
+      const productId = parsed.searchParams.get("id")
+      const skuId = parsed.searchParams.get("skuId")
+
+      if (productId) {
+        const normalized = new URL("https://detail.tmall.com/item.htm")
+        normalized.searchParams.set("id", productId)
+
+        if (skuId) {
+          normalized.searchParams.set("skuId", skuId)
+        }
+
+        return normalized.toString()
+      }
+    }
+
+    if (task.platform === "pdd") {
+      const goodsId =
+        parsed.searchParams.get("goods_id") ||
+        parsed.searchParams.get("goodsId") ||
+        parsed.pathname.match(/goods(?:_detail)?\/(\d+)/)?.[1]
+
+      if (goodsId) {
+        const normalized = new URL("https://mobile.yangkeduo.com/goods.html")
+        normalized.searchParams.set("goods_id", goodsId)
+        return normalized.toString()
+      }
+    }
+  } catch {
+    // Fall back to the original task URL if normalization fails.
+  }
+
+  return task.sourceUrl
+}
+
 async function removeTab(tabId: number | undefined) {
   if (!tabId) {
     return
@@ -265,7 +304,7 @@ async function extractFromTab(tabId: number, platform: QueuedTask["platform"]) {
 }
 
 async function runPageExtraction(task: QueuedTask) {
-  const tab = await createHiddenTab(task.sourceUrl)
+  const tab = await createHiddenTab(buildTaskPageUrl(task))
 
   try {
     if (!tab.id) {
