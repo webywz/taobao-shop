@@ -2,6 +2,7 @@ const INSTALLATION_ID_KEY = "installationId"
 const DEVICE_ID_KEY = "deviceId"
 const DEVICE_TOKEN_KEY = "deviceToken"
 const LICENSE_TOKEN_KEY = "licenseToken"
+const PDD_WORK_TAB_ID_KEY = "pddWorkTabId"
 
 function createInstallationId() {
   return `ins_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`
@@ -53,4 +54,20 @@ export async function setLicenseToken(licenseToken: string) {
 export async function getLicenseToken() {
   const data = await chrome.storage.local.get(LICENSE_TOKEN_KEY)
   return (data[LICENSE_TOKEN_KEY] as string | undefined) ?? null
+}
+
+export async function setPddWorkTabId(tabId: number) {
+  await chrome.storage.local.set({
+    [PDD_WORK_TAB_ID_KEY]: tabId
+  })
+}
+
+export async function getPddWorkTabId() {
+  const data = await chrome.storage.local.get(PDD_WORK_TAB_ID_KEY)
+  const tabId = data[PDD_WORK_TAB_ID_KEY]
+  return typeof tabId === "number" ? tabId : null
+}
+
+export async function clearPddWorkTabId() {
+  await chrome.storage.local.remove(PDD_WORK_TAB_ID_KEY)
 }
