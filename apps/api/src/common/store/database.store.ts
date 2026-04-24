@@ -197,18 +197,8 @@ function detectPlatform(sourceUrl: string): Platform {
     return "taobao"
   }
 
-  const isPddHost =
-    hostname.endsWith(".yangkeduo.com") ||
-    hostname === "yangkeduo.com" ||
-    hostname.endsWith(".pinduoduo.com") ||
-    hostname === "pinduoduo.com"
-
-  if (isPddHost) {
-    return "pdd"
-  }
-
   throw new NotFoundException(
-    "unsupported platform: only taobao.com, tmall.com, m.tb.cn, pinduoduo.com, yangkeduo.com are supported"
+    "unsupported platform: only taobao.com, tmall.com, and m.tb.cn are supported"
   )
 }
 

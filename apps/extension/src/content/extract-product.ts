@@ -1,4 +1,4 @@
-import type { GroupType, ManifestAssetInput, Platform } from "@tb-pdd-image/shared"
+import type { GroupType, ManifestAssetInput } from "@tb-pdd-image/shared"
 
 type ExtractedProduct = {
   title: string | null
@@ -54,38 +54,9 @@ function normalizeImageUrl(rawUrl: string) {
   }
 }
 
-function getProductId(platform: Platform) {
+function getProductId() {
   const url = new URL(window.location.href)
-
-  if (platform === "taobao") {
-    return url.searchParams.get("id")
-  }
-
-  return (
-    url.searchParams.get("goods_id") ||
-    url.searchParams.get("goodsId") ||
-    url.pathname.match(/goods(?:_detail)?\/(\d+)/)?.[1] ||
-    null
-  )
-}
-
-function getNormalizedPageText() {
-  return document.body?.innerText?.replace(/\s+/g, " ").trim() || ""
-}
-
-function assertPddProductPage() {
-  const productId = getProductId("pdd")
-  const title = document.title
-  const bodyText = getNormalizedPageText()
-  const unavailableKeywords = ["已售罄", "商品已售罄", "已下架", "商品不存在", "宝贝不存在", "该商品已下架"]
-
-  if (unavailableKeywords.some((keyword) => title.includes(keyword) || bodyText.includes(keyword))) {
-    throw new Error("PRODUCT_NOT_FOUND")
-  }
-
-  if (!productId) {
-    throw new Error("PDD_PRODUCT_PAGE_REQUIRED")
-  }
+  return url.searchParams.get("id")
 }
 
 function collectImageUrlFromElement(element: HTMLImageElement) {
@@ -230,85 +201,39 @@ function extractBySelectors(
       (node): node is HTMLImageElement => node instanceof HTMLImageElement
     )
   )
+  const candidates: CandidateImage[] = []
 
-  const candidates = images
-    .map((element) => {
-      const rawUrl = collectImageUrlFromElement(element)
-      const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl) : null
+  for (const element of images) {
+    const rawUrl = collectImageUrlFromElement(element)
+    const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl) : null
 
-      if (!sourceUrl || isIgnoredImageUrl(sourceUrl)) {
-        return null
-      }
+    if (!sourceUrl || isIgnoredImageUrl(sourceUrl)) {
+      continue
+    }
 
-      const width = element.naturalWidth || element.width || undefined
-      const height = element.naturalHeight || element.height || undefined
+    const width = element.naturalWidth || element.width || undefined
+    const height = element.naturalHeight || element.height || undefined
 
-      if ((width ?? 0) < 80 && (height ?? 0) < 80) {
-        return null
-      }
+    if ((width ?? 0) < 80 && (height ?? 0) < 80) {
+      continue
+    }
 
-      const candidate = {
-        sourceUrl,
-        width,
-        height,
-        mimeType: undefined,
-        skuName: options.skuNameFromElement ? readSkuName(element) : null
-      } satisfies CandidateImage
+    const candidate: CandidateImage = {
+      sourceUrl,
+      width,
+      height,
+      mimeType: undefined,
+      skuName: options.skuNameFromElement ? readSkuName(element) : null
+    }
 
-      if (options.predicate && !options.predicate(candidate)) {
-        return null
-      }
+    if (options.predicate && !options.predicate(candidate)) {
+      continue
+    }
 
-      return candidate
-    })
-    .filter((candidate): candidate is CandidateImage => candidate !== null)
+    candidates.push(candidate)
+  }
 
   return dedupeCandidates(candidates).slice(0, limit)
-}
-
-function extractFallbackMainImages(limit: number) {
-  const images = Array.from(document.images)
-    .map((element) => {
-      const rawUrl = collectImageUrlFromElement(element)
-      const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl) : null
-
-      if (!sourceUrl || isIgnoredImageUrl(sourceUrl)) {
-        return null
-      }
-
-      const rect = element.getBoundingClientRect()
-      const width = element.naturalWidth || element.width || Math.round(rect.width) || undefined
-      const height = element.naturalHeight || element.height || Math.round(rect.height) || undefined
-
-      if ((width ?? 0) < 240 || (height ?? 0) < 240) {
-        return null
-      }
-
-      return {
-        sourceUrl,
-        width,
-        height,
-        score: (width ?? 0) * (height ?? 0),
-        top: rect.top
-      }
-    })
-    .filter(
-      (
-        candidate
-      ): candidate is CandidateImage & {
-        score: number
-        top: number
-      } => candidate !== null
-    )
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score
-      }
-
-      return left.top - right.top
-    })
-
-  return dedupeCandidates(images).slice(0, limit)
 }
 
 function collectAccessibleDocuments() {
@@ -359,327 +284,43 @@ function collectAllCandidates(
   skuRegionSelector: string,
   detailRegionSelector: string
 ) {
-  return collectAccessibleDocuments()
-    .flatMap(({ doc, topOffset, fromIframe }) =>
-      Array.from(doc.images).map((element) => {
-        const rawUrl = collectImageUrlFromElement(element)
-        const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl) : null
-
-        if (!sourceUrl || isIgnoredImageUrl(sourceUrl)) {
-          return null
-        }
-
-        const rect = element.getBoundingClientRect()
-        const width = element.naturalWidth || Math.round(rect.width) || element.width || undefined
-        const height =
-          element.naturalHeight || Math.round(rect.height) || element.height || undefined
-
-        if ((width ?? 0) < 60 && (height ?? 0) < 60) {
-          return null
-        }
-
-        return {
-          sourceUrl,
-          width,
-          height,
-          mimeType: undefined,
-          skuName: matchesRegion(element, skuRegionSelector) ? readSkuName(element) : null,
-          top: topOffset + rect.top,
-          area: (width ?? 0) * (height ?? 0),
-          inMainRegion: matchesRegion(element, mainRegionSelector),
-          inSkuRegion: matchesRegion(element, skuRegionSelector),
-          inDetailRegion: fromIframe || matchesRegion(element, detailRegionSelector),
-          fromIframe
-        } satisfies CandidateImage
-      })
-    )
-    .filter((candidate): candidate is CandidateImage => candidate !== null)
-}
-
-function extractAssignedObjectFromScript(
-  scriptContent: string,
-  variableName: string
-): string | null {
-  const markerIndex = scriptContent.indexOf(variableName)
-
-  if (markerIndex < 0) {
-    return null
-  }
-
-  const equalsIndex = scriptContent.indexOf("=", markerIndex + variableName.length)
-
-  if (equalsIndex < 0) {
-    return null
-  }
-
-  let startIndex = equalsIndex + 1
-
-  while (startIndex < scriptContent.length && /\s/.test(scriptContent[startIndex])) {
-    startIndex += 1
-  }
-
-  if (scriptContent[startIndex] !== "{") {
-    return null
-  }
-
-  let depth = 0
-  let inString = false
-  let quoteChar = ""
-  let escaped = false
-
-  for (let index = startIndex; index < scriptContent.length; index += 1) {
-    const char = scriptContent[index]
-
-    if (inString) {
-      if (escaped) {
-        escaped = false
-        continue
-      }
-
-      if (char === "\\") {
-        escaped = true
-        continue
-      }
-
-      if (char === quoteChar) {
-        inString = false
-      }
-
-      continue
-    }
-
-    if (char === "'" || char === "\"" || char === "`") {
-      inString = true
-      quoteChar = char
-      continue
-    }
-
-    if (char === "{") {
-      depth += 1
-      continue
-    }
-
-    if (char === "}") {
-      depth -= 1
-
-      if (depth === 0) {
-        return scriptContent.slice(startIndex, index + 1)
-      }
-    }
-  }
-
-  return null
-}
-
-function readNumberFromRecord(record: Record<string, unknown>, keys: string[]) {
-  for (const key of keys) {
-    const value = record[key]
-
-    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-      return value
-    }
-
-    if (typeof value === "string") {
-      const parsed = Number(value)
-
-      if (Number.isFinite(parsed) && parsed > 0) {
-        return parsed
-      }
-    }
-  }
-
-  return undefined
-}
-
-function readStringFromRecord(record: Record<string, unknown>, keys: string[]) {
-  for (const key of keys) {
-    const value = record[key]
-
-    if (typeof value === "string") {
-      const normalized = value.replace(/\s+/g, " ").trim()
-
-      if (normalized) {
-        return normalized.slice(0, 60)
-      }
-    }
-  }
-
-  return null
-}
-
-function isLikelyImageUrlFromData(value: string) {
-  if (!/^https?:\/\//i.test(value)) {
-    return false
-  }
-
-  if (/\.(?:jpe?g|png|webp|gif|bmp|avif)(?:$|\?)/i.test(value)) {
-    return true
-  }
-
-  return (
-    /(pddpic\.com|yangkeduo\.com|pinduoduo\.com)/i.test(value) &&
-    /(img|image|pic|photo|goods)/i.test(value)
-  )
-}
-
-function classifyStructuredPath(path: string[]) {
-  const joined = path.join(".").toLowerCase()
-
-  return {
-    inMainRegion: /(banner|gallery|swiper|carousel|thumbnail|thumb|main|top)/i.test(joined),
-    inSkuRegion: /(sku|spec|prop|attr|option|variant|style)/i.test(joined),
-    inDetailRegion: /(detail|desc|content|intro|rich|long)/i.test(joined)
-  }
-}
-
-function collectCandidatesFromStructuredData(data: unknown) {
-  const stack: Array<{
-    value: unknown
-    path: string[]
-  }> = [{ value: data, path: [] }]
-  const visited = new WeakSet<object>()
   const candidates: CandidateImage[] = []
-  let visitedNodes = 0
-  const maxVisitedNodes = 50000
-  const maxCandidateCount = 400
 
-  while (stack.length && visitedNodes < maxVisitedNodes && candidates.length < maxCandidateCount) {
-    const current = stack.pop()
+  for (const { doc, topOffset, fromIframe } of collectAccessibleDocuments()) {
+    for (const element of Array.from(doc.images)) {
+      const rawUrl = collectImageUrlFromElement(element)
+      const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl) : null
 
-    if (!current) {
-      continue
-    }
-
-    const { value, path } = current
-
-    if (!value || typeof value !== "object") {
-      continue
-    }
-
-    if (visited.has(value)) {
-      continue
-    }
-
-    visited.add(value)
-    visitedNodes += 1
-
-    if (Array.isArray(value)) {
-      value.forEach((item, index) => {
-        stack.push({
-          value: item,
-          path: [...path, String(index)]
-        })
-      })
-      continue
-    }
-
-    const record = value as Record<string, unknown>
-    const imageWidth = readNumberFromRecord(record, ["image_width", "imageWidth", "picWidth", "width", "w"])
-    const imageHeight = readNumberFromRecord(record, [
-      "image_height",
-      "imageHeight",
-      "picHeight",
-      "height",
-      "h"
-    ])
-    const skuName = readStringFromRecord(record, [
-      "sku_name",
-      "skuName",
-      "spec_name",
-      "specName",
-      "value_name",
-      "valueName",
-      "name",
-      "title"
-    ])
-
-    for (const [key, child] of Object.entries(record)) {
-      const nextPath = [...path, key]
-
-      if (typeof child === "string" && isLikelyImageUrlFromData(child)) {
-        const sourceUrl = normalizeImageUrl(child)
-
-        if (!sourceUrl || isIgnoredImageUrl(sourceUrl)) {
-          continue
-        }
-
-        const regionInfo = classifyStructuredPath(nextPath)
-
-        candidates.push({
-          sourceUrl,
-          width: imageWidth,
-          height: imageHeight,
-          mimeType: undefined,
-          skuName: regionInfo.inSkuRegion ? skuName : null,
-          area: imageWidth && imageHeight ? imageWidth * imageHeight : undefined,
-          inMainRegion: regionInfo.inMainRegion,
-          inSkuRegion: regionInfo.inSkuRegion,
-          inDetailRegion: regionInfo.inDetailRegion
-        })
-      }
-
-      if (child && typeof child === "object") {
-        stack.push({
-          value: child,
-          path: nextPath
-        })
-      }
-    }
-  }
-
-  return dedupeCandidates(candidates)
-}
-
-function collectPddStructuredCandidates() {
-  const candidates: CandidateImage[] = []
-  const windowLike = window as unknown as Record<string, unknown>
-  const globalCandidates = [
-    windowLike.rawData,
-    windowLike.__RAW_DATA__,
-    windowLike.__INITIAL_STATE__,
-    windowLike.__PRELOADED_STATE__
-  ]
-
-  for (const data of globalCandidates) {
-    if (!data || typeof data !== "object") {
-      continue
-    }
-
-    candidates.push(...collectCandidatesFromStructuredData(data))
-  }
-
-  const variableNames = [
-    "window.rawData",
-    "window.__RAW_DATA__",
-    "window.__INITIAL_STATE__",
-    "window.__PRELOADED_STATE__"
-  ]
-  const inlineScripts = Array.from(document.querySelectorAll("script:not([src])"))
-
-  for (const script of inlineScripts) {
-    const content = script.textContent
-
-    if (!content) {
-      continue
-    }
-
-    for (const variableName of variableNames) {
-      const objectText = extractAssignedObjectFromScript(content, variableName)
-
-      if (!objectText) {
+      if (!sourceUrl || isIgnoredImageUrl(sourceUrl)) {
         continue
       }
 
-      try {
-        const parsed = JSON.parse(objectText)
-        candidates.push(...collectCandidatesFromStructuredData(parsed))
-      } catch {
-        // Ignore script blocks that are not strict JSON objects.
+      const rect = element.getBoundingClientRect()
+      const width = element.naturalWidth || Math.round(rect.width) || element.width || undefined
+      const height =
+        element.naturalHeight || Math.round(rect.height) || element.height || undefined
+
+      if ((width ?? 0) < 60 && (height ?? 0) < 60) {
+        continue
       }
+
+      candidates.push({
+        sourceUrl,
+        width,
+        height,
+        mimeType: undefined,
+        skuName: matchesRegion(element, skuRegionSelector) ? readSkuName(element) : null,
+        top: topOffset + rect.top,
+        area: (width ?? 0) * (height ?? 0),
+        inMainRegion: matchesRegion(element, mainRegionSelector),
+        inSkuRegion: matchesRegion(element, skuRegionSelector),
+        inDetailRegion: fromIframe || matchesRegion(element, detailRegionSelector),
+        fromIframe
+      })
     }
   }
 
-  return dedupeCandidates(candidates)
+  return candidates
 }
 
 function getImageStabilitySnapshot() {
@@ -899,69 +540,16 @@ function selectOtherCandidates(
     .slice(0, 200)
 }
 
-function isAuthRequiredPage(platform: Platform) {
-  if (platform !== "pdd") {
-    return false
-  }
-
-  const href = window.location.href
-
-  if (/(?:^|\/)(login|passport|verify|captcha)(?:\/|$|\?)/i.test(href)) {
-    return true
-  }
-
-  const title = document.title
-  const bodyText = getNormalizedPageText()
-  const authKeywords = ["请登录", "立即登录", "手机号登录", "微信登录", "短信登录", "滑块验证"]
-  const matchedKeywords = authKeywords.filter(
-    (keyword) => title.includes(keyword) || bodyText.includes(keyword)
-  )
-
-  if (!matchedKeywords.length) {
-    return false
-  }
-
-  const hasGoodsId = Boolean(getProductId(platform))
-  const imageCount = document.images.length
-  const loginControls = document.querySelectorAll("input[type='password'], input[type='tel'], button").length
-
-  return !hasGoodsId || imageCount < 3 || loginControls > 3
-}
-
-export async function extractProductFromPage(platform: Platform): Promise<ExtractedProduct> {
-  if (isAuthRequiredPage(platform)) {
-    throw new Error("AUTH_REQUIRED")
-  }
-
-  if (platform === "pdd") {
-    assertPddProductPage()
-  }
-
+export async function extractProductFromPage(): Promise<ExtractedProduct> {
   await warmUpLazyContent()
 
-  if (isAuthRequiredPage(platform)) {
-    throw new Error("AUTH_REQUIRED")
-  }
-
-  if (platform === "pdd") {
-    assertPddProductPage()
-  }
-
-  const mainSelectors =
-    platform === "taobao"
-      ? [
-          "#J_UlThumb img",
-          "[class*='tb-thumb'] img",
-          "[class*='thumbnail'] img",
-          "[class*='gallery'] img",
-          "[class*='swiper'] img"
-        ]
-      : [
-          "[class*='goods-gallery'] img",
-          "[class*='goods-detail'] img",
-          "[class*='swiper'] img",
-          "[class*='thumbnail'] img"
-        ]
+  const mainSelectors = [
+    "#J_UlThumb img",
+    "[class*='tb-thumb'] img",
+    "[class*='thumbnail'] img",
+    "[class*='gallery'] img",
+    "[class*='swiper'] img"
+  ]
 
   const skuSelectors = [
     "[class*='sku'] img",
@@ -971,22 +559,14 @@ export async function extractProductFromPage(platform: Platform): Promise<Extrac
     "[data-sku] img"
   ]
 
-  const detailPrimarySelectors =
-    platform === "taobao"
-      ? [
-          "#description img",
-          "#J_DivItemDesc img",
-          "[class*='descV8'] img",
-          "[class*='detail-content'] img",
-          "[class*='detailContent'] img",
-          "[data-spm*='detail'] img"
-        ]
-      : [
-          "[class*='goods-detail'] img",
-          "[class*='detail-gallery'] img",
-          "[class*='goods-desc'] img",
-          "[class*='detail-content'] img"
-        ]
+  const detailPrimarySelectors = [
+    "#description img",
+    "#J_DivItemDesc img",
+    "[class*='descV8'] img",
+    "[class*='detail-content'] img",
+    "[class*='detailContent'] img",
+    "[data-spm*='detail'] img"
+  ]
 
   const detailFallbackSelectors = [
     "[id*='detail'] img",
@@ -994,11 +574,13 @@ export async function extractProductFromPage(platform: Platform): Promise<Extrac
     "[class*='desc'] img"
   ]
 
-  const mainRegionSelector = getCombinedSelector(
-    platform === "taobao"
-      ? ["#J_UlThumb", "[class*='tb-thumb']", "[class*='thumbnail']", "[class*='gallery']", "[class*='swiper']"]
-      : ["[class*='goods-gallery']", "[class*='swiper']", "[class*='thumbnail']"]
-  )
+  const mainRegionSelector = getCombinedSelector([
+    "#J_UlThumb",
+    "[class*='tb-thumb']",
+    "[class*='thumbnail']",
+    "[class*='gallery']",
+    "[class*='swiper']"
+  ])
   const skuRegionSelector = getCombinedSelector([
     "[class*='sku']",
     "[class*='Sku']",
@@ -1011,7 +593,7 @@ export async function extractProductFromPage(platform: Platform): Promise<Extrac
     ...detailFallbackSelectors.map((selector) => selector.replace(/\s+img$/, ""))
   ])
 
-  const structuredCandidates = platform === "pdd" ? collectPddStructuredCandidates() : []
+  const structuredCandidates: CandidateImage[] = []
   const structuredMain = structuredCandidates.filter((candidate) => candidate.inMainRegion)
   const structuredSku = structuredCandidates.filter((candidate) => candidate.inSkuRegion)
   const structuredDetail = structuredCandidates.filter((candidate) => candidate.inDetailRegion)
@@ -1072,7 +654,7 @@ export async function extractProductFromPage(platform: Platform): Promise<Extrac
 
   return {
     title,
-    productId: getProductId(platform),
+    productId: getProductId(),
     canonicalUrl: window.location.href,
     images: {
       main: toManifestAssets("main", fallbackMain),

@@ -61,7 +61,7 @@ async function sendBridgeMessage<T extends BridgeRequestType>(
       }
 
       if (
-        data?.source !== "tb-pdd-image-saas-extension" ||
+        data?.source !== "tb-image-saas-extension" ||
         data.type !== type ||
         data.requestId !== requestId
       ) {
@@ -76,7 +76,7 @@ async function sendBridgeMessage<T extends BridgeRequestType>(
     window.addEventListener("message", onMessage)
     window.postMessage(
       {
-        source: "tb-pdd-image-saas-web",
+        source: "tb-image-saas-web",
         type,
         requestId,
         payload

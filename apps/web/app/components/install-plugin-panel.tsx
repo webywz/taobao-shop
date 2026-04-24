@@ -64,7 +64,7 @@ export function InstallPluginPanel() {
         </div>
       </div>
       <div className="row" style={{ marginBottom: 20 }}>
-        <a className="button" href="/downloads/tb-pdd-image-extension.zip" download>
+        <a className="button" href="/downloads/tb-image-extension.zip" download>
           📥 下载插件包
         </a>
         <button className="button secondary" onClick={handleCheck} disabled={checking}>

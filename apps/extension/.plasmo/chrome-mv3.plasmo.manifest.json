@@ -18,8 +18,8 @@
     "default_popup": "./popup.html"
   },
   "version": "0.1.10",
-  "name": "TB PDD Image Extractor",
-  "description": "Extract product images from Taobao and Pinduoduo pages.",
+  "name": "TB Image Extractor",
+  "description": "Extract product images from Taobao and Tmall pages.",
   "background": {
     "service_worker": "./static/background/index.ts"
   },

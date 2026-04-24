@@ -1,25 +1,19 @@
 import type { GroupType } from "@tb-pdd-image/shared"
 
 import {
-  clearPddWorkTabId,
   getDeviceId,
   getDeviceToken,
   getInstallationId,
   getLicenseToken,
-  getPddWorkTabId,
   setDeviceId,
   setDeviceToken,
-  setLicenseToken,
-  setPddWorkTabId
+  setLicenseToken
 } from "../shared/storage"
 import { API_BASE_URL } from "../shared/config"
 import { EXTRACTOR_VERSION, EXTENSION_VERSION } from "../shared/version"
 
 const POLL_ALARM_NAME = "task-poll"
 const TAB_LOAD_TIMEOUT_MS = 60000
-const DEBUGGER_PROTOCOL_VERSION = "1.3"
-const PDD_MOBILE_USER_AGENT =
-  "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36"
 let pollInFlight = false
 
 function ensurePollAlarm() {
@@ -61,7 +55,7 @@ async function refreshSupportedAppTabs() {
 
 type QueuedTask = {
   taskId: string
-  platform: "taobao" | "pdd"
+  platform: "taobao"
   sourceUrl: string
   taskToken: string
 }
@@ -108,6 +102,7 @@ type DownloadedAsset = ExtractedAsset & {
   clientAssetId: string
   blob: Blob
   ext: string
+  mimeType: string
   originalSourceUrl: string
 }
 
@@ -196,109 +191,21 @@ async function createHiddenTab(url: string) {
   })
 }
 
-async function focusTab(tabId: number) {
-  try {
-    await chrome.tabs.update(tabId, {
-      active: true
-    })
-  } catch {
-    // Ignore tabs that disappear before focus.
-  }
-}
-
-async function ensurePddMobileEmulation(tabId: number) {
-  const debuggee = {
-    tabId
-  } satisfies chrome.debugger.Debuggee
-
-  try {
-    await chrome.debugger.detach(debuggee)
-  } catch {
-    // Ignore tabs that are not currently attached.
-  }
-
-  await chrome.debugger.attach(debuggee, DEBUGGER_PROTOCOL_VERSION)
-  await chrome.debugger.sendCommand(debuggee, "Emulation.setDeviceMetricsOverride", {
-    width: 412,
-    height: 915,
-    deviceScaleFactor: 2.625,
-    mobile: true,
-    screenWidth: 412,
-    screenHeight: 915,
-    positionX: 0,
-    positionY: 0,
-    scale: 1
-  })
-  await chrome.debugger.sendCommand(debuggee, "Emulation.setTouchEmulationEnabled", {
-    enabled: true,
-    configuration: "mobile"
-  })
-  await chrome.debugger.sendCommand(debuggee, "Emulation.setUserAgentOverride", {
-    userAgent: PDD_MOBILE_USER_AGENT,
-    platform: "Android",
-    acceptLanguage: "zh-CN,zh;q=0.9"
-  })
-}
-
-function isPddTaskPageUrl(url: string | undefined) {
-  if (!url) {
-    return false
-  }
-
-  try {
-    const parsed = new URL(url)
-
-    return (
-      parsed.hostname === "mobile.yangkeduo.com" &&
-      (parsed.pathname === "/goods.html" || parsed.pathname.startsWith("/goods"))
-    )
-  } catch {
-    return false
-  }
-}
-
-function isPddDomainUrl(url: string | undefined) {
-  if (!url) {
-    return false
-  }
-
-  try {
-    const parsed = new URL(url)
-    const hostname = parsed.hostname.toLowerCase()
-
-    return (
-      hostname === "mobile.yangkeduo.com" ||
-      hostname.endsWith(".yangkeduo.com") ||
-      hostname === "pinduoduo.com" ||
-      hostname.endsWith(".pinduoduo.com")
-    )
-  } catch {
-    return false
-  }
-}
-
 function buildTaskPageUrl(task: QueuedTask) {
   try {
     const parsed = new URL(task.sourceUrl)
+    const productId = parsed.searchParams.get("id")
+    const skuId = parsed.searchParams.get("skuId")
 
-    if (task.platform === "taobao") {
-      const productId = parsed.searchParams.get("id")
-      const skuId = parsed.searchParams.get("skuId")
+    if (productId) {
+      const normalized = new URL("https://detail.tmall.com/item.htm")
+      normalized.searchParams.set("id", productId)
 
-      if (productId) {
-        const normalized = new URL("https://detail.tmall.com/item.htm")
-        normalized.searchParams.set("id", productId)
-
-        if (skuId) {
-          normalized.searchParams.set("skuId", skuId)
-        }
-
-        return normalized.toString()
+      if (skuId) {
+        normalized.searchParams.set("skuId", skuId)
       }
-    }
 
-    if (task.platform === "pdd") {
-      return task.sourceUrl
+      return normalized.toString()
     }
   } catch {
     // Fall back to the original task URL if normalization fails.
@@ -316,28 +223,6 @@ async function removeTab(tabId: number | undefined) {
     await chrome.tabs.remove(tabId)
   } catch {
     // Ignore cleanup failures for already-closed tabs.
-  }
-}
-
-async function getBoundPddWorkTab() {
-  const tabId = await getPddWorkTabId()
-
-  if (!tabId) {
-    return null
-  }
-
-  try {
-    const tab = await chrome.tabs.get(tabId)
-
-    if (!tab.id || !isPddDomainUrl(tab.url)) {
-      await clearPddWorkTabId()
-      return null
-    }
-
-    return tab
-  } catch {
-    await clearPddWorkTabId()
-    return null
   }
 }
 
@@ -368,14 +253,12 @@ async function waitForTabComplete(tabId: number) {
   })
 }
 
-async function extractFromTab(tabId: number, platform: QueuedTask["platform"]) {
+async function extractFromTab(tabId: number) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       const response = (await chrome.tabs.sendMessage(tabId, {
         type: "EXTRACT_PRODUCT_IMAGES",
-        payload: {
-          platform
-        }
+        payload: {}
       })) as
         | {
             success: true
@@ -404,36 +287,10 @@ async function extractFromTab(tabId: number, platform: QueuedTask["platform"]) {
 }
 
 async function openTaskTab(task: QueuedTask) {
-  const taskUrl = buildTaskPageUrl(task)
-
-  if (task.platform !== "pdd") {
-    return {
-      tab: await createHiddenTab(taskUrl),
-      shouldClose: true
-    }
+  return {
+    tab: await createHiddenTab(buildTaskPageUrl(task)),
+    shouldClose: true
   }
-
-  const reusableTab = await getBoundPddWorkTab()
-
-  if (reusableTab?.id) {
-    await ensurePddMobileEmulation(reusableTab.id)
-
-    const tab = await chrome.tabs.update(reusableTab.id, {
-      url: taskUrl,
-      active: true
-    })
-
-    if (!tab?.id) {
-      throw new Error("failed to reuse pdd task tab")
-    }
-
-    return {
-      tab,
-      shouldClose: false
-    }
-  }
-
-  throw new Error("PDD_WORK_TAB_REQUIRED")
 }
 
 async function runPageExtraction(task: QueuedTask) {
@@ -450,7 +307,7 @@ async function runPageExtraction(task: QueuedTask) {
     let lastPayload: ExtractedTaskPayload | null = null
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      lastPayload = await extractFromTab(tab.id, task.platform)
+      lastPayload = await extractFromTab(tab.id)
 
       const detailCount = lastPayload.images.detail.length
       const mainCount = lastPayload.images.main.length
@@ -467,58 +324,9 @@ async function runPageExtraction(task: QueuedTask) {
     }
 
     return lastPayload
-  } catch (error) {
-    if (task.platform === "pdd" && error instanceof Error && error.message === "AUTH_REQUIRED") {
-      await focusTab(tab.id)
-    }
-
-    throw error
   } finally {
     if (shouldClose) {
       await removeTab(tab.id)
-    }
-  }
-}
-
-async function diagnosePddWorkTab() {
-  const pddWorkTab = await getBoundPddWorkTab()
-
-  if (!pddWorkTab?.id) {
-    return {
-      success: false as const,
-      error: "还没有绑定拼多多工作页"
-    }
-  }
-
-  try {
-    await focusTab(pddWorkTab.id)
-    await ensurePddMobileEmulation(pddWorkTab.id)
-    await waitForTabComplete(pddWorkTab.id)
-    await sleep(1500)
-
-    const payload = await extractFromTab(pddWorkTab.id, "pdd")
-    const refreshedTab = await chrome.tabs.get(pddWorkTab.id).catch(() => null)
-
-    return {
-      success: true as const,
-      url: refreshedTab?.url ?? pddWorkTab.url ?? null,
-      title: payload.title,
-      productId: payload.productId,
-      counts: {
-        main: payload.images.main.length,
-        sku: payload.images.sku.length,
-        detail: payload.images.detail.length,
-        other: payload.images.other.length
-      }
-    }
-  } catch (error) {
-    const refreshedTab = await chrome.tabs.get(pddWorkTab.id).catch(() => null)
-
-    return {
-      success: false as const,
-      error: error instanceof Error ? error.message : "unknown error",
-      url: refreshedTab?.url ?? pddWorkTab.url ?? null,
-      title: refreshedTab?.title ?? null
     }
   }
 }
@@ -801,22 +609,14 @@ async function pollNextTask() {
 
     const task = (await response.json()) as QueuedTask
 
-    if (task.platform === "pdd" && !(await getBoundPddWorkTab())) {
-      return
-    }
-
     try {
       await executeTask(task, deviceId, deviceToken)
     } catch (error) {
       console.error("task execution failed", error)
       const errorMessage = error instanceof Error ? error.message : "unknown error"
       const errorCode =
-        errorMessage === "PDD_WORK_TAB_REQUIRED"
+        errorMessage === "AUTH_REQUIRED"
           ? "AUTH_REQUIRED"
-          : errorMessage === "AUTH_REQUIRED"
-          ? "AUTH_REQUIRED"
-          : errorMessage === "PDD_PRODUCT_PAGE_REQUIRED"
-          ? "PRODUCT_NOT_FOUND"
           : errorMessage === "PRODUCT_NOT_FOUND"
           ? "PRODUCT_NOT_FOUND"
           : errorMessage === "page load timeout"
@@ -849,16 +649,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 })
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  void (async () => {
-    const boundTabId = await getPddWorkTabId()
-
-    if (boundTabId === tabId) {
-      await clearPddWorkTabId()
-    }
-  })()
-})
-
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "PLUGIN_PING") {
     sendResponse({
@@ -872,12 +662,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     void (async () => {
       const deviceId = await getDeviceId()
       const licenseToken = await getLicenseToken()
-      const pddWorkTab = await getBoundPddWorkTab()
       sendResponse({
         installed: true,
         bound: Boolean(deviceId && licenseToken),
-        deviceId,
-        pddWorkTabBound: Boolean(pddWorkTab?.id)
+        deviceId
       })
     })()
     return true
@@ -923,59 +711,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({
         success: true
       })
-    })()
-    return true
-  }
-
-  if (message?.type === "BIND_PDD_WORK_TAB") {
-    void (async () => {
-      const [activeTab] = await chrome.tabs.query({
-        active: true,
-        currentWindow: true
-      })
-
-      if (!activeTab?.id || !isPddDomainUrl(activeTab.url)) {
-        sendResponse({
-          success: false,
-          error: "请先打开并停留在拼多多页面"
-        })
-        return
-      }
-
-      await setPddWorkTabId(activeTab.id)
-      sendResponse({
-        success: true,
-        tabId: activeTab.id,
-        url: activeTab.url
-      })
-    })()
-    return true
-  }
-
-  if (message?.type === "OPEN_PDD_WORK_TAB") {
-    void (async () => {
-      const pddWorkTab = await getBoundPddWorkTab()
-
-      if (!pddWorkTab?.id) {
-        sendResponse({
-          success: false,
-          error: "还没有绑定拼多多工作页"
-        })
-        return
-      }
-
-      await focusTab(pddWorkTab.id)
-      sendResponse({
-        success: true,
-        tabId: pddWorkTab.id
-      })
-    })()
-    return true
-  }
-
-  if (message?.type === "DIAGNOSE_PDD_WORK_TAB") {
-    void (async () => {
-      sendResponse(await diagnosePddWorkTab())
     })()
     return true
   }

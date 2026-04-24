@@ -1,22 +1,20 @@
-import type { Platform } from "@tb-pdd-image/shared"
-
 import { extractProductFromPage } from "./extract-product"
 
 type BridgeMessage =
   | {
-      source: "tb-pdd-image-saas-web"
+      source: "tb-image-saas-web"
       type: "PLUGIN_PING"
       requestId: string
       payload: Record<string, never>
     }
   | {
-      source: "tb-pdd-image-saas-web"
+      source: "tb-image-saas-web"
       type: "PLUGIN_STATUS"
       requestId: string
       payload: Record<string, never>
     }
   | {
-      source: "tb-pdd-image-saas-web"
+      source: "tb-image-saas-web"
       type: "BIND_LICENSE"
       requestId: string
       payload: {
@@ -24,7 +22,7 @@ type BridgeMessage =
       }
     }
   | {
-      source: "tb-pdd-image-saas-web"
+      source: "tb-image-saas-web"
       type: "TRIGGER_POLL"
       requestId: string
       payload: Record<string, never>
@@ -32,9 +30,7 @@ type BridgeMessage =
 
 type RuntimeExtractMessage = {
   type: "EXTRACT_PRODUCT_IMAGES"
-  payload: {
-    platform: Platform
-  }
+  payload: Record<string, never>
 }
 
 function isBridgeMessage(value: unknown): value is BridgeMessage {
@@ -45,7 +41,7 @@ function isBridgeMessage(value: unknown): value is BridgeMessage {
   const candidate = value as Record<string, unknown>
 
   return (
-    candidate.source === "tb-pdd-image-saas-web" &&
+    candidate.source === "tb-image-saas-web" &&
     typeof candidate.type === "string" &&
     typeof candidate.requestId === "string"
   )
@@ -64,7 +60,7 @@ window.addEventListener("message", (event) => {
     (response) => {
       window.postMessage(
         {
-          source: "tb-pdd-image-saas-extension",
+          source: "tb-image-saas-extension",
           type: event.data.type,
           requestId: event.data.requestId,
           payload: response ?? {
@@ -84,7 +80,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeExtractMessage, _sender, s
 
   void (async () => {
     try {
-      const payload = await extractProductFromPage(message.payload.platform)
+      const payload = await extractProductFromPage()
       sendResponse({
         success: true,
         payload

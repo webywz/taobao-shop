@@ -1,12 +1,12 @@
 {
   "name": "@tb-pdd-image/extension",
-  "displayName": "TB PDD Image Extractor",
+  "displayName": "TB Image Extractor",
   "version": "0.1.10",
   "private": true,
   "type": "module",
   "manifest": {
-    "name": "TB PDD Image Extractor",
-    "description": "Extract product images from Taobao and Pinduoduo pages.",
+    "name": "TB Image Extractor",
+    "description": "Extract product images from Taobao and Tmall pages.",
     "permissions": [
       "alarms",
       "debugger",

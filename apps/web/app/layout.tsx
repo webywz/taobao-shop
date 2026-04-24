@@ -6,7 +6,7 @@ import "./globals.css"
 
 export const metadata: Metadata = {
   title: "ImageFlow — 商品图片提取台",
-  description: "一站式淘宝 / 天猫 / 拼多多商品图片提取、归档与格式转换平台",
+  description: "一站式淘宝 / 天猫商品图片提取、归档与格式转换平台",
 }
 
 export default function RootLayout({ children }: { children: ReactNode }) {

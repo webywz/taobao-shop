@@ -1,4 +1,4 @@
-export type Platform = "taobao" | "pdd"
+export type Platform = "taobao"
 export type TaskStatus =
   | "pending"
   | "claimed"

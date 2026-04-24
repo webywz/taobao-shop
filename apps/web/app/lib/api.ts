@@ -11,7 +11,7 @@ import type {
 
 import { API_BASE_URL } from "./config"
 
-const LICENSE_STORAGE_KEY = "tb-pdd-license-token"
+const LICENSE_STORAGE_KEY = "tb-license-token"
 
 function normalizeTask(task: Task): Task {
   return {

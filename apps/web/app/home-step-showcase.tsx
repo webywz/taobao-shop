@@ -44,7 +44,7 @@ const steps: HomeStep[] = [
     shortTitle: "创建提取任务",
     title: "输入链接，创建任务",
     copy: "任务创建后会立即通知插件执行。",
-    detail: "支持淘宝、天猫、拼多多链接。创建成功后，插件会按当前授权状态接手执行。",
+    detail: "支持淘宝、天猫链接。创建成功后，插件会按当前授权状态接手执行。",
     status: "提交待提取链接",
     href: "/extract",
     action: "创建任务 →",

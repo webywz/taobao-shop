@@ -80,7 +80,7 @@ export function TaskCreatePanel() {
         </button>
       </div>
       <div className="meta-row">
-        <div className="meta-chip">支持淘宝 / 天猫 / 拼多多</div>
+        <div className="meta-chip">支持淘宝 / 天猫</div>
         <div className="meta-chip">创建任务后立即通知插件拉取</div>
       </div>
       {message ? <div className="message-box">{message}</div> : null}

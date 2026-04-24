@@ -6,7 +6,7 @@ export default function ExtractPage() {
       <section className="hero">
         <div className="hero-tagline">📦 Step 03</div>
         <h1>输入链接，创建提取任务</h1>
-        <p className="hero-copy">任务创建后会立即通知插件执行，支持淘宝、天猫、拼多多。</p>
+        <p className="hero-copy">任务创建后会立即通知插件执行，支持淘宝、天猫。</p>
       </section>
       <div className="grid two">
         <section className="panel">
@@ -21,7 +21,7 @@ export default function ExtractPage() {
           <ul className="list" style={{ marginTop: 16 }}>
             <li>
               <strong>🌐 支持平台</strong>
-              淘宝 / 天猫 / 拼多多。
+              淘宝 / 天猫。
             </li>
             <li>
               <strong>⚡ 触发方式</strong>
