@@ -189,8 +189,7 @@
         typeof current.className === "string" ? current.className : "",
         current.getAttribute("data-spm") || "",
         current.getAttribute("aria-label") || "",
-        current.getAttribute("title") || "",
-        (current.textContent || "").slice(0, 160)
+        current.getAttribute("title") || ""
       ].join(" ");
 
       if (containsSectionKeyword(markerText, EXCLUDED_SECTION_KEYWORDS)) {
@@ -211,10 +210,11 @@
       const compactText = normalizeSectionText(text);
       if (!compactText || compactText.length > 40) continue;
       if (!containsSectionKeyword(compactText, TRAILING_SECTION_KEYWORDS)) continue;
+      if (node.children.length > 8) continue;
 
       const rect = node.getBoundingClientRect();
-      const top = rect.top;
-      if (top <= window.innerHeight * 0.45) continue;
+      const top = window.scrollY + rect.top;
+      if (top <= window.innerHeight * 1.2) continue;
 
       cutoffTop = cutoffTop === null ? top : Math.min(cutoffTop, top);
     }
@@ -299,7 +299,7 @@
     const candidates = [];
     const docs = options.checkAllDocs ? collectAccessibleDocuments() : [{ doc: document }];
 
-    for (const { doc } of docs) {
+    for (const { doc, topOffset } of docs) {
       const elements = selectors.flatMap(selector =>
         Array.from(doc.querySelectorAll(selector)).filter(node => node instanceof HTMLImageElement)
       );
@@ -312,7 +312,7 @@
         if (!url || isIgnoredImageUrl(url)) continue;
 
         const rect = element.getBoundingClientRect();
-        const top = rect.top;
+        const top = topOffset + rect.top;
         if (options.cutoffTop != null && top >= options.cutoffTop) continue;
 
         const width = element.naturalWidth || element.width || undefined;
@@ -391,9 +391,9 @@
     const longestEdge = Math.max(width, height);
     const area = width * height;
 
-    if (longestEdge < 360) return false;
-    if (shortestEdge < 180) return false;
-    if (area < 90000) return false;
+    if (longestEdge < 260) return false;
+    if (shortestEdge < 120) return false;
+    if (area < 45000) return false;
     return true;
   }
 
@@ -415,9 +415,9 @@
         const belowFold = (candidate.top || 0) > window.innerHeight * 0.7;
 
         if (!candidate.inDetailRegion && !belowFold) return false;
-        if (longestEdge < 360) return false;
-        if (shortestEdge < 220) return false;
-        if (area < 90000) return false;
+        if (longestEdge < 260) return false;
+        if (shortestEdge < 120) return false;
+        if (area < 45000) return false;
 
         const key = buildDedupeKey(candidate.url);
         if (seen.has(key)) return false;
@@ -582,9 +582,24 @@
         }),
         ...selectDetailCandidates(allCandidates, [...fallbackMain])
       ]).slice(0, 30);
+      const fallbackDetailCandidates = detailCandidates.length
+        ? detailCandidates
+        : dedupeCandidates(
+            excludeKnownProductImages(allCandidates, [...fallbackMain]).filter(candidate => {
+              const width = candidate.width || 0;
+              const height = candidate.height || 0;
+              const area = candidate.area || width * height;
+              return (
+                (candidate.inDetailRegion || (candidate.top || 0) > window.innerHeight * 0.8) &&
+                Math.max(width, height) >= 220 &&
+                Math.min(width, height) >= 100 &&
+                area >= 30000
+              );
+            })
+          ).slice(0, 30);
 
       const mainImages = fallbackMain.map(candidate => candidate.url);
-      const detailImages = detailCandidates
+      const detailImages = fallbackDetailCandidates
         .map(candidate => candidate.url)
         .filter(url => !mainImages.includes(url));
 
