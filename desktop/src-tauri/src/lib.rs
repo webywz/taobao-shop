@@ -190,6 +190,23 @@ fn normalize_asset_key(url: &str) -> String {
   }
 }
 
+fn is_supported_magic(bytes: &[u8], expected_video: bool) -> bool {
+  if bytes.is_empty() {
+    return false;
+  }
+
+  if expected_video {
+    return bytes.len() >= 12 && bytes[4..8] == *b"ftyp";
+  }
+
+  bytes.starts_with(&[0xFF, 0xD8, 0xFF])
+    || bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+    || bytes.starts_with(b"RIFF")
+    || bytes.starts_with(b"GIF87a")
+    || bytes.starts_with(b"GIF89a")
+    || bytes.starts_with(b"BM")
+}
+
 fn resolve_download_dir(task_id: &str, title: Option<&str>) -> Result<PathBuf, String> {
   let base_dir = dirs::download_dir()
     .or_else(|| std::env::current_dir().ok())
@@ -233,12 +250,34 @@ async fn download_group(
       continue;
     }
 
-    let ext = infer_extension(url, probe.headers().get("content-type").and_then(|v| v.to_str().ok()), default_ext);
+    let content_type = probe
+      .headers()
+      .get("content-type")
+      .and_then(|v| v.to_str().ok())
+      .unwrap_or("");
+    let expect_video = default_ext.eq_ignore_ascii_case("mp4");
+    let is_expected_type = if expect_video {
+      content_type.starts_with("video/") || content_type == "application/octet-stream"
+    } else {
+      content_type.starts_with("image/") || content_type == "application/octet-stream"
+    };
+    if !content_type.is_empty() && !is_expected_type {
+      continue;
+    }
+
+    let ext = infer_extension(url, Some(content_type), default_ext);
     let file_path = root_dir.join(format!("{}_{:02}.{}", file_prefix, saved_count + 1, ext));
     let bytes = probe
       .bytes()
       .await
       .map_err(|e| format!("read body failed for {}: {}", url, e))?;
+
+    if bytes.len() < if expect_video { 4096 } else { 512 } {
+      continue;
+    }
+    if !is_supported_magic(&bytes, expect_video) {
+      continue;
+    }
 
     if fs::write(&file_path, &bytes).is_ok() {
       saved_count += 1;

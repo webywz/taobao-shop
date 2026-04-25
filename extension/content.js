@@ -164,6 +164,22 @@
     }
   }
 
+  function isTooSmallImage(width, height, minShortestEdge = 60, minArea = 3600) {
+    if (!width || !height) return false;
+    const shortestEdge = Math.min(width, height);
+    const area = width * height;
+    return shortestEdge < minShortestEdge || area < minArea;
+  }
+
+  function isEmptyImageElement(element) {
+    const naturalWidth = element.naturalWidth || 0;
+    const naturalHeight = element.naturalHeight || 0;
+
+    if (naturalWidth === 1 && naturalHeight === 1) return true;
+    if (element.complete && naturalWidth === 0 && naturalHeight === 0) return true;
+    return false;
+  }
+
   function getCombinedSelector(selectors) {
     return selectors.join(", ");
   }
@@ -340,6 +356,7 @@
       for (const element of elements) {
         if (isInExcludedSection(element)) continue;
         if (isLogoLikeElement(element)) continue;
+        if (isEmptyImageElement(element)) continue;
 
         const rawUrl = collectImageUrlFromElement(element);
         const url = rawUrl ? normalizeImageUrl(rawUrl) : null;
@@ -348,10 +365,20 @@
         const rect = element.getBoundingClientRect();
         const top = topOffset + rect.top;
         if (options.cutoffTop != null && top >= options.cutoffTop) continue;
+        if (options.minTop != null && top < options.minTop) continue;
 
         const width = element.naturalWidth || element.width || undefined;
         const height = element.naturalHeight || element.height || undefined;
-        if ((width || 0) < 80 && (height || 0) < 80) continue;
+        if (
+          isTooSmallImage(
+            width || 0,
+            height || 0,
+            options.minShortestEdge ?? 60,
+            options.minArea ?? 3600
+          )
+        ) {
+          continue;
+        }
 
         const candidate = {
           url,
@@ -377,6 +404,7 @@
       for (const element of Array.from(doc.images)) {
         if (isInExcludedSection(element)) continue;
         if (isLogoLikeElement(element)) continue;
+        if (isEmptyImageElement(element)) continue;
 
         const rawUrl = collectImageUrlFromElement(element);
         const url = rawUrl ? normalizeImageUrl(rawUrl) : null;
@@ -388,7 +416,7 @@
 
         const width = element.naturalWidth || Math.round(rect.width) || element.width || undefined;
         const height = element.naturalHeight || Math.round(rect.height) || element.height || undefined;
-        if ((width || 0) < 60 && (height || 0) < 60) continue;
+        if (isTooSmallImage(width || 0, height || 0, 60, 3600)) continue;
 
         candidates.push({
           url,
@@ -426,9 +454,9 @@
     const longestEdge = Math.max(width, height);
     const area = width * height;
 
-    if (longestEdge < 260) return false;
+    if (longestEdge < 320) return false;
     if (shortestEdge < 120) return false;
-    if (area < 45000) return false;
+    if (area < 50000) return false;
     return true;
   }
 
@@ -447,12 +475,11 @@
         const shortestEdge = Math.min(width, height);
         const longestEdge = Math.max(width, height);
         const area = candidate.area || width * height;
-        const belowFold = (candidate.top || 0) > window.innerHeight * 0.7;
 
-        if (!candidate.inDetailRegion && !belowFold) return false;
-        if (longestEdge < 260) return false;
-        if (shortestEdge < 120) return false;
-        if (area < 45000) return false;
+        if (!candidate.inDetailRegion) return false;
+        if (longestEdge < 360) return false;
+        if (shortestEdge < 220) return false;
+        if (area < 90000) return false;
 
         const key = buildDedupeKey(candidate.url);
         if (seen.has(key)) return false;
@@ -583,12 +610,15 @@
         detailRegionSelector,
         recommendationCutoffTop
       );
-      const explicitMain = extractBySelectors(mainSelectors, 12);
+      const explicitMain = extractBySelectors(mainSelectors, 20, {
+        minShortestEdge: 30,
+        minArea: 900
+      });
       const fallbackMain = explicitMain.length
         ? dedupeCandidates([
             ...explicitMain,
-            ...rankByVisualPriority(allCandidates.filter(candidate => candidate.inMainRegion)).slice(0, 20)
-          ]).slice(0, 12)
+            ...rankByVisualPriority(allCandidates.filter(candidate => candidate.inMainRegion)).slice(0, 30)
+          ]).slice(0, 20)
         : rankByVisualPriority(
             allCandidates.filter(
               candidate =>
@@ -598,32 +628,42 @@
                 (candidate.height || 0) >= 240 &&
                 (candidate.top || 0) < window.innerHeight * 1.2
             )
-          ).slice(0, 12);
+          ).slice(0, 20);
       const skuCandidates = dedupeCandidates([
         ...extractBySelectors(skuSelectors, 50, { extractSku: true }),
         ...rankByVisualPriority(
           allCandidates.filter(
             candidate =>
               candidate.inSkuRegion &&
-              (candidate.width || 0) >= 40 &&
-              (candidate.height || 0) >= 40
+              !isTooSmallImage(candidate.width || 0, candidate.height || 0, 80, 12000)
           )
         ).slice(0, 40)
       ]).slice(0, 40);
 
+      const primaryDetailCandidates = extractBySelectors(detailPrimarySelectors, 60, {
+        predicate: isLikelyDetailImage,
+        checkAllDocs: true,
+        cutoffTop: recommendationCutoffTop,
+        minShortestEdge: 80,
+        minArea: 10000
+      });
+      const fallbackSelectorDetails =
+        primaryDetailCandidates.length >= 4
+          ? []
+          : extractBySelectors(detailFallbackSelectors, 60, {
+              predicate: isLikelyDetailImage,
+              checkAllDocs: true,
+              cutoffTop: recommendationCutoffTop,
+              minTop: window.innerHeight * 0.55,
+              minShortestEdge: 100,
+              minArea: 20000
+            });
+
       const detailCandidates = dedupeCandidates([
-        ...extractBySelectors(detailPrimarySelectors, 60, {
-          predicate: isLikelyDetailImage,
-          checkAllDocs: true,
-          cutoffTop: recommendationCutoffTop
-        }),
-        ...extractBySelectors(detailFallbackSelectors, 60, {
-          predicate: isLikelyDetailImage,
-          checkAllDocs: true,
-          cutoffTop: recommendationCutoffTop
-        }),
+        ...primaryDetailCandidates,
+        ...fallbackSelectorDetails,
         ...selectDetailCandidates(allCandidates, [...fallbackMain, ...skuCandidates])
-      ]).slice(0, 30);
+      ]).slice(0, 60);
       const fallbackDetailCandidates = detailCandidates.length
         ? detailCandidates
         : dedupeCandidates(
@@ -632,13 +672,13 @@
               const height = candidate.height || 0;
               const area = candidate.area || width * height;
               return (
-                (candidate.inDetailRegion || (candidate.top || 0) > window.innerHeight * 0.8) &&
+                candidate.inDetailRegion &&
                 Math.max(width, height) >= 220 &&
                 Math.min(width, height) >= 100 &&
                 area >= 30000
               );
             })
-          ).slice(0, 30);
+          ).slice(0, 60);
 
       const mainImages = fallbackMain.map(candidate => candidate.url);
       const colorImages = skuCandidates.map(candidate => candidate.url);

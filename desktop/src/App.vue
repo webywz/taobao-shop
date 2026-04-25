@@ -497,16 +497,6 @@ onUnmounted(() => {
                   <span>过滤重复颜色</span>
                 </label>
               </div>
-              <div class="site-grid">
-                <label class="option-item">
-                  <input v-model="downloadOptions.enableTaobao" type="checkbox" />
-                  <span>新版淘宝</span>
-                </label>
-                <label class="option-item">
-                  <input v-model="downloadOptions.enableTmall" type="checkbox" />
-                  <span>新版天猫</span>
-                </label>
-              </div>
             </div>
             <div class="action-row">
               <button class="btn-primary" :disabled="!hasMedia('selected') || !!downloadTarget" @click="handleDownload('selected')">
