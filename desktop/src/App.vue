@@ -65,7 +65,7 @@ const canExport = computed(
 
 async function requestSessionStatus(): Promise<SessionStatus> {
   return invoke<SessionStatus>("collector_session_status", {
-    base_url: collectorBase.value
+    baseUrl: collectorBase.value
   });
 }
 
@@ -75,28 +75,28 @@ async function requestEnsureCollectorStarted(): Promise<CollectorBootstrap> {
 
 async function requestOpenLogin(): Promise<SessionStatus> {
   return invoke<SessionStatus>("collector_open_login", {
-    base_url: collectorBase.value
+    baseUrl: collectorBase.value
   });
 }
 
 async function requestCreateTask(url: string): Promise<{ taskId: string; status: string }> {
   return invoke<{ taskId: string; status: string }>("collector_collect_product", {
-    base_url: collectorBase.value,
+    baseUrl: collectorBase.value,
     url
   });
 }
 
 async function requestTask(taskId: string): Promise<TaskRecord> {
   return invoke<TaskRecord>("collector_get_task", {
-    base_url: collectorBase.value,
-    task_id: taskId
+    baseUrl: collectorBase.value,
+    taskId: taskId
   });
 }
 
 async function requestExport(taskId: string): Promise<{ taskId: string; exportJsonPath: string }> {
   return invoke<{ taskId: string; exportJsonPath: string }>("collector_export_task", {
-    base_url: collectorBase.value,
-    task_id: taskId
+    baseUrl: collectorBase.value,
+    taskId: taskId
   });
 }
 

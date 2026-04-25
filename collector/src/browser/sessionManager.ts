@@ -24,7 +24,8 @@ class SessionManager {
     await mkdir(this.profileDir, { recursive: true });
     return chromium.launchPersistentContext(this.profileDir, {
       headless: false,
-      viewport: { width: 1366, height: 900 }
+      viewport: { width: 1366, height: 900 },
+      executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     });
   }
 

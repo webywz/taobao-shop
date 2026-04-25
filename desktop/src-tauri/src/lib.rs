@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::Manager;
 
 const DEFAULT_COLLECTOR_BASE_URL: &str = "http://127.0.0.1:4318";
@@ -91,6 +92,25 @@ async fn request_collector(
   }
 }
 
+async fn wait_for_collector_ready(base_url: &str) -> Result<(), String> {
+  let timeout = Duration::from_secs(12);
+  let start = std::time::Instant::now();
+  let mut last_error: Option<String> = None;
+
+  while start.elapsed() < timeout {
+    match request_collector(Method::GET, base_url, "/health", None).await {
+      Ok(_) => return Ok(()),
+      Err(err) => last_error = Some(err),
+    }
+    std::thread::sleep(Duration::from_millis(250));
+  }
+
+  Err(format!(
+    "collector did not become ready in time: {}",
+    last_error.unwrap_or_else(|| "unknown error".to_string())
+  ))
+}
+
 #[tauri::command]
 async fn collector_session_status(base_url: String) -> Result<Value, String> {
   request_collector(Method::GET, &base_url, "/session/status", None).await
@@ -125,20 +145,24 @@ async fn collector_export_task(base_url: String, task_id: String) -> Result<Valu
 }
 
 #[tauri::command]
-fn collector_ensure_started(state: tauri::State<AppState>) -> Result<CollectorBootstrap, String> {
-  let mut holder = state.collector_child.lock().map_err(|e| e.to_string())?;
-  if let Some(child) = holder.as_mut() {
-    if is_child_running(child)? {
-      return Ok(CollectorBootstrap {
-        started: true,
-        base_url: DEFAULT_COLLECTOR_BASE_URL.to_string(),
-      });
+async fn collector_ensure_started(
+  state: tauri::State<'_, AppState>,
+) -> Result<CollectorBootstrap, String> {
+  {
+    let mut holder = state.collector_child.lock().map_err(|e| e.to_string())?;
+    if let Some(child) = holder.as_mut() {
+      if !is_child_running(child)? {
+        *holder = None;
+      }
     }
-    *holder = None;
+
+    if holder.is_none() {
+      let child = spawn_collector()?;
+      *holder = Some(child);
+    }
   }
 
-  let child = spawn_collector()?;
-  *holder = Some(child);
+  wait_for_collector_ready(DEFAULT_COLLECTOR_BASE_URL).await?;
   Ok(CollectorBootstrap {
     started: true,
     base_url: DEFAULT_COLLECTOR_BASE_URL.to_string(),
