@@ -4,12 +4,20 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 
 type TaskStatus = "pending" | "running" | "completed" | "failed";
 
+type SkuItem = {
+  name: string;
+  image?: string;
+};
+
 type TaskResult = {
   title?: string;
   price_text?: string;
   shop_name?: string;
   images?: string[];
-  skus?: object[];
+  video_url?: string | null;
+  color_images?: string[];
+  detail_images?: string[];
+  skus?: SkuItem[];
 };
 
 type Task = {
@@ -22,16 +30,29 @@ type Task = {
   error_message?: string;
 };
 
+type DownloadTarget = "all" | "main" | "color" | "detail" | "video";
+
+type DownloadAssetsResult = {
+  saved_dir: string;
+  main_count: number;
+  color_count: number;
+  detail_count: number;
+  video_count: number;
+};
 
 const url = ref("");
 const tasks = ref<Task[]>([]);
 const selectedTask = ref<Task | null>(null);
 const loading = ref(false);
 const backendOk = ref(false);
+const downloadTarget = ref<DownloadTarget | null>(null);
+const downloadMessage = ref("");
+const downloadError = ref("");
 let pollTimer: number | undefined;
 let listTimer: number | undefined;
 
 const runningCount = computed(() => tasks.value.filter(t => t.status === "running" || t.status === "pending").length);
+const selectedResult = computed(() => selectedTask.value?.result ?? null);
 
 async function checkHealth() {
   try {
@@ -94,6 +115,8 @@ function startPoll(taskId: string) {
 
 function selectTask(task: Task) {
   selectedTask.value = task;
+  downloadMessage.value = "";
+  downloadError.value = "";
 }
 
 function statusColor(s: TaskStatus) {
@@ -102,6 +125,78 @@ function statusColor(s: TaskStatus) {
 
 function statusLabel(s: TaskStatus) {
   return { pending: "等待中", running: "采集中", completed: "已完成", failed: "失败" }[s] ?? s;
+}
+
+function downloadLabel(target: DownloadTarget) {
+  return {
+    all: "下载全部资源",
+    main: "下载主图",
+    color: "下载颜色图",
+    detail: "下载详情图",
+    video: "下载视频"
+  }[target];
+}
+
+function getDownloadCount(result: DownloadAssetsResult, target: DownloadTarget) {
+  if (target === "all") {
+    return result.main_count + result.color_count + result.detail_count + result.video_count;
+  }
+
+  return {
+    main: result.main_count,
+    color: result.color_count,
+    detail: result.detail_count,
+    video: result.video_count
+  }[target];
+}
+
+function hasMedia(target: DownloadTarget) {
+  const result = selectedResult.value;
+  if (!result) return false;
+
+  return {
+    all:
+      Boolean(result.images?.length) ||
+      Boolean(result.color_images?.length) ||
+      Boolean(result.detail_images?.length) ||
+      Boolean(result.video_url),
+    main: Boolean(result.images?.length),
+    color: Boolean(result.color_images?.length),
+    detail: Boolean(result.detail_images?.length),
+    video: Boolean(result.video_url)
+  }[target];
+}
+
+function isDownloading(target: DownloadTarget) {
+  return downloadTarget.value === target;
+}
+
+async function handleDownload(target: DownloadTarget) {
+  if (!selectedTask.value?.result) return;
+
+  downloadTarget.value = target;
+  downloadMessage.value = "";
+  downloadError.value = "";
+
+  try {
+    const result = await invoke<DownloadAssetsResult>("download_assets", {
+      input: {
+        task_id: selectedTask.value.id,
+        title: selectedTask.value.result.title ?? null,
+        target,
+        main_images: selectedTask.value.result.images ?? [],
+        color_images: selectedTask.value.result.color_images ?? [],
+        detail_images: selectedTask.value.result.detail_images ?? [],
+        video_url: selectedTask.value.result.video_url ?? null
+      }
+    });
+
+    downloadMessage.value = `已保存 ${getDownloadCount(result, target)} 个文件到 ${result.saved_dir}`;
+  } catch (error) {
+    downloadError.value = error instanceof Error ? error.message : "下载失败";
+  } finally {
+    downloadTarget.value = null;
+  }
 }
 
 onMounted(async () => {
@@ -186,16 +281,133 @@ onUnmounted(() => {
               <span class="result-label">店铺</span>
               <span class="result-value">{{ selectedTask.result.shop_name ?? "—" }}</span>
             </div>
+            <div class="result-row">
+              <span class="result-label">主图</span>
+              <span class="result-value">{{ selectedTask.result.images?.length || 0 }} 张</span>
+            </div>
+            <div class="result-row">
+              <span class="result-label">主图视频</span>
+              <span class="result-value">{{ selectedTask.result.video_url ? "已抓取" : "无" }}</span>
+            </div>
+            <div class="result-row">
+              <span class="result-label">颜色图片</span>
+              <span class="result-value">{{ selectedTask.result.color_images?.length || 0 }} 张</span>
+            </div>
+            <div class="result-row">
+              <span class="result-label">详情图片</span>
+              <span class="result-value">{{ selectedTask.result.detail_images?.length || 0 }} 张</span>
+            </div>
+            <div class="action-row">
+              <button class="btn-secondary" :disabled="!hasMedia('all') || !!downloadTarget" @click="handleDownload('all')">
+                {{ isDownloading("all") ? "下载中..." : downloadLabel("all") }}
+              </button>
+              <button class="btn-secondary" :disabled="!hasMedia('main') || !!downloadTarget" @click="handleDownload('main')">
+                {{ isDownloading("main") ? "下载中..." : downloadLabel("main") }}
+              </button>
+              <button class="btn-secondary" :disabled="!hasMedia('color') || !!downloadTarget" @click="handleDownload('color')">
+                {{ isDownloading("color") ? "下载中..." : downloadLabel("color") }}
+              </button>
+              <button class="btn-secondary" :disabled="!hasMedia('detail') || !!downloadTarget" @click="handleDownload('detail')">
+                {{ isDownloading("detail") ? "下载中..." : downloadLabel("detail") }}
+              </button>
+              <button class="btn-secondary" :disabled="!hasMedia('video') || !!downloadTarget" @click="handleDownload('video')">
+                {{ isDownloading("video") ? "下载中..." : downloadLabel("video") }}
+              </button>
+            </div>
           </div>
 
-          <div v-if="selectedTask.result.images?.length" class="images-grid">
-            <img
-              v-for="(img, i) in selectedTask.result.images.slice(0, 6)"
-              :key="i"
-              :src="img"
-              class="thumb"
-            />
-          </div>
+          <div v-if="downloadMessage" class="success-box">{{ downloadMessage }}</div>
+          <div v-if="downloadError" class="error-box">{{ downloadError }}</div>
+
+          <section v-if="selectedTask.result.images?.length" class="media-section">
+            <div class="media-header">
+              <div>
+                <div class="media-title">主图</div>
+                <div class="media-meta">{{ selectedTask.result.images.length }} 张</div>
+              </div>
+              <a class="link-btn" :href="selectedTask.result.images[0]" target="_blank" rel="noreferrer">打开首张</a>
+            </div>
+            <div class="images-grid">
+              <a
+                v-for="(img, i) in selectedTask.result.images"
+                :key="`main-${i}`"
+                :href="img"
+                target="_blank"
+                rel="noreferrer"
+                class="media-link"
+              >
+                <img :src="img" class="thumb" />
+              </a>
+            </div>
+          </section>
+
+          <section v-if="selectedTask.result.color_images?.length" class="media-section">
+            <div class="media-header">
+              <div>
+                <div class="media-title">颜色图</div>
+                <div class="media-meta">{{ selectedTask.result.color_images.length }} 张</div>
+              </div>
+            </div>
+            <div class="images-grid">
+              <a
+                v-for="(img, i) in selectedTask.result.color_images"
+                :key="`color-${i}`"
+                :href="img"
+                target="_blank"
+                rel="noreferrer"
+                class="media-link"
+              >
+                <img :src="img" class="thumb" />
+              </a>
+            </div>
+          </section>
+
+          <section v-if="selectedTask.result.skus?.length" class="media-section">
+            <div class="media-header">
+              <div>
+                <div class="media-title">SKU 识别</div>
+                <div class="media-meta">{{ selectedTask.result.skus.length }} 条</div>
+              </div>
+            </div>
+            <div class="sku-grid">
+              <div v-for="(sku, i) in selectedTask.result.skus" :key="`sku-${i}`" class="sku-card">
+                <img v-if="sku.image" :src="sku.image" class="sku-thumb" />
+                <div class="sku-name">{{ sku.name }}</div>
+              </div>
+            </div>
+          </section>
+
+          <section v-if="selectedTask.result.detail_images?.length" class="media-section">
+            <div class="media-header">
+              <div>
+                <div class="media-title">详情图</div>
+                <div class="media-meta">{{ selectedTask.result.detail_images.length }} 张</div>
+              </div>
+            </div>
+            <div class="images-grid detail-grid">
+              <a
+                v-for="(img, i) in selectedTask.result.detail_images"
+                :key="`detail-${i}`"
+                :href="img"
+                target="_blank"
+                rel="noreferrer"
+                class="media-link"
+              >
+                <img :src="img" class="thumb detail-thumb" />
+              </a>
+            </div>
+          </section>
+
+          <section v-if="selectedTask.result.video_url" class="media-section">
+            <div class="media-header">
+              <div>
+                <div class="media-title">主图视频</div>
+                <div class="media-meta">支持在线播放与下载</div>
+              </div>
+              <a class="link-btn" :href="selectedTask.result.video_url" target="_blank" rel="noreferrer">打开视频地址</a>
+            </div>
+            <video class="video-player" :src="selectedTask.result.video_url" controls preload="metadata"></video>
+          </section>
         </template>
 
         <div v-if="selectedTask.error_message" class="error-box">

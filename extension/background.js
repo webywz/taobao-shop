@@ -1,9 +1,41 @@
 const BACKEND_URL = "http://127.0.0.1:4318";
 
+async function pollTasks() {
+  try {
+    const resp = await fetch(`${BACKEND_URL}/tasks?status=pending`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    
+    if (data.tasks && data.tasks.length > 0) {
+      for (const task of data.tasks) {
+        // Mark as running
+        await fetch(`${BACKEND_URL}/tasks/${task.id}/status?status=running`, {
+          method: "POST",
+        });
+        
+        // Open tab with __task_id
+        let urlObj = new URL(task.url);
+        urlObj.searchParams.set("__task_id", task.id);
+        
+        chrome.tabs.create({ url: urlObj.toString(), active: false });
+      }
+    }
+  } catch (err) {
+    // Backend might be offline, ignore
+  }
+}
+
+// Poll every 3 seconds
+setInterval(pollTasks, 3000);
+pollTasks();
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "COLLECT_RESULT") {
     submitResult(msg.taskId, msg.data).then(sendResponse).catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
+  }
+  if (msg.type === "CLOSE_TAB" && sender.tab) {
+    chrome.tabs.remove(sender.tab.id);
   }
 });
 
@@ -19,48 +51,4 @@ async function submitResult(taskId, data) {
     }),
   });
   return resp.json();
-}
-
-chrome.runtime.onConnectExternal.addListener((port) => {
-  port.onMessage.addListener(async (msg) => {
-    if (msg.type === "OPEN_AND_COLLECT") {
-      const { taskId, url } = msg;
-      const tab = await chrome.tabs.create({ url, active: false });
-      chrome.tabs.onUpdated.addListener(function listener(tabId, info) {
-        if (tabId === tab.id && info.status === "complete") {
-          chrome.tabs.onUpdated.removeListener(listener);
-          chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: collectAndReport,
-            args: [taskId, BACKEND_URL],
-          });
-        }
-      });
-      port.postMessage({ ok: true, taskId });
-    }
-  });
-});
-
-function collectAndReport(taskId, backendUrl) {
-  function getText(sel) {
-    const el = document.querySelector(sel);
-    return el ? el.innerText.trim() : null;
-  }
-
-  const title = getText(".mainTitle") || getText('[data-spm="title"]') || document.title;
-  const priceText = getText(".priceText") || getText(".tb-rmb-num") || getText('[class*="price"]');
-  const shopName = getText(".shopName") || getText('[class*="shop-name"]');
-
-  const images = Array.from(document.querySelectorAll(".mainPicList img, .tb-thumb img"))
-    .map(img => img.src || img.dataset.src)
-    .filter(Boolean)
-    .slice(0, 10);
-
-  const result = { title, price_text: priceText, shop_name: shopName, images, skus: [], raw: null };
-
-  fetch(`${backendUrl}/tasks/${taskId}/result`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ task_id: taskId, result, status: "completed" }),
-  });
 }

@@ -26,6 +26,9 @@ class TaskResult(BaseModel):
     price_text: Optional[str] = None
     shop_name: Optional[str] = None
     images: list[str] = []
+    video_url: Optional[str] = None
+    color_images: list[str] = []
+    detail_images: list[str] = []
     skus: list[dict] = []
     raw: Optional[dict] = None
 
@@ -64,6 +67,15 @@ def list_tasks(status: Optional[str] = None):
         result = [t for t in result if t["status"] == status]
     result.sort(key=lambda t: t["created_at"], reverse=True)
     return {"total": len(result), "tasks": result}
+
+@app.post("/tasks/{task_id}/status")
+def update_task_status(task_id: str, status: str):
+    task = tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    task["status"] = status
+    task["updated_at"] = time.time()
+    return {"ok": True}
 
 
 @app.get("/tasks/{task_id}")
