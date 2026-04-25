@@ -2,225 +2,215 @@
 import { invoke } from "@tauri-apps/api/core";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 
-type SessionStatus = {
-  started: boolean;
-  loggedIn: boolean;
-  profileDir: string;
-  lastCheckedAt?: string;
+type TaskStatus = "pending" | "running" | "completed" | "failed";
+
+type TaskResult = {
+  title?: string;
+  price_text?: string;
+  shop_name?: string;
+  images?: string[];
+  skus?: object[];
 };
 
-type CollectorBootstrap = {
-  started: boolean;
-  base_url: string;
-};
-
-type TaskStatus =
-  | "created"
-  | "queued"
-  | "launching_browser"
-  | "waiting_login"
-  | "loading_page"
-  | "extracting"
-  | "normalizing"
-  | "persisting"
-  | "completed"
-  | "partial"
-  | "failed"
-  | "cancelled";
-
-type TaskRecord = {
+type Task = {
   id: string;
-  sourceUrl: string;
-  finalUrl?: string;
+  url: string;
   status: TaskStatus;
-  progress: number;
-  result?: {
-    title?: string;
-    priceText?: string;
-    shopName?: string;
-    finalUrl?: string;
-  };
-  artifacts?: {
-    debugDir?: string;
-    screenshotPath?: string;
-    pageHtmlPath?: string;
-    resultJsonPath?: string;
-    exportJsonPath?: string;
-  };
-  errorMessage?: string;
+  created_at: number;
+  updated_at: number;
+  result?: TaskResult;
+  error_message?: string;
 };
 
-const collectorBase = ref("http://127.0.0.1:4318");
-const productUrl = ref("https://item.taobao.com/item.htm?id=123456");
+
+const url = ref("");
+const tasks = ref<Task[]>([]);
+const selectedTask = ref<Task | null>(null);
 const loading = ref(false);
-const sessionStatus = ref<SessionStatus | null>(null);
-const currentTask = ref<TaskRecord | null>(null);
-const message = ref("");
-
+const backendOk = ref(false);
 let pollTimer: number | undefined;
+let listTimer: number | undefined;
 
-const canExport = computed(
-  () => currentTask.value?.status === "completed" || currentTask.value?.status === "partial"
-);
+const runningCount = computed(() => tasks.value.filter(t => t.status === "running" || t.status === "pending").length);
 
-async function requestSessionStatus(): Promise<SessionStatus> {
-  return invoke<SessionStatus>("collector_session_status", {
-    baseUrl: collectorBase.value
-  });
-}
-
-async function requestEnsureCollectorStarted(): Promise<CollectorBootstrap> {
-  return invoke<CollectorBootstrap>("collector_ensure_started");
-}
-
-async function requestOpenLogin(): Promise<SessionStatus> {
-  return invoke<SessionStatus>("collector_open_login", {
-    baseUrl: collectorBase.value
-  });
-}
-
-async function requestCreateTask(url: string): Promise<{ taskId: string; status: string }> {
-  return invoke<{ taskId: string; status: string }>("collector_collect_product", {
-    baseUrl: collectorBase.value,
-    url
-  });
-}
-
-async function requestTask(taskId: string): Promise<TaskRecord> {
-  return invoke<TaskRecord>("collector_get_task", {
-    baseUrl: collectorBase.value,
-    taskId: taskId
-  });
-}
-
-async function requestExport(taskId: string): Promise<{ taskId: string; exportJsonPath: string }> {
-  return invoke<{ taskId: string; exportJsonPath: string }>("collector_export_task", {
-    baseUrl: collectorBase.value,
-    taskId: taskId
-  });
-}
-
-function stopPolling() {
-  if (pollTimer !== undefined) {
-    window.clearInterval(pollTimer);
-    pollTimer = undefined;
+async function checkHealth() {
+  try {
+    await invoke<object>("backend_request", { method: "GET", path: "/health", body: null });
+    backendOk.value = true;
+  } catch {
+    backendOk.value = false;
   }
 }
 
-function startPolling(taskId: string) {
-  stopPolling();
+async function fetchTasks() {
+  try {
+    const data = await invoke<{ tasks: Task[] }>("backend_request", { method: "GET", path: "/tasks", body: null });
+    tasks.value = data.tasks;
+  } catch {}
+}
+
+async function createTask() {
+  if (!url.value.trim()) return;
+  loading.value = true;
+  try {
+    const res = await invoke<{ task_id: string }>("backend_request", {
+      method: "POST",
+      path: "/tasks",
+      body: { url: url.value.trim() },
+    });
+    url.value = "";
+    await fetchTasks();
+    const task = tasks.value.find(t => t.id === res.task_id) ?? null;
+    selectedTask.value = task;
+    startPoll(res.task_id);
+  } catch (e) {
+    console.error(e);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function deleteTask(id: string) {
+  await invoke("backend_request", { method: "DELETE", path: `/tasks/${id}`, body: null });
+  if (selectedTask.value?.id === id) selectedTask.value = null;
+  await fetchTasks();
+}
+
+function startPoll(taskId: string) {
+  if (pollTimer) clearInterval(pollTimer);
   pollTimer = window.setInterval(async () => {
     try {
-      const task = await requestTask(taskId);
-      currentTask.value = task;
-      if (["completed", "partial", "failed", "cancelled"].includes(task.status)) {
-        stopPolling();
+      const task = await invoke<Task>("backend_request", { method: "GET", path: `/tasks/${taskId}`, body: null });
+      selectedTask.value = task;
+      await fetchTasks();
+      if (task.status === "completed" || task.status === "failed") {
+        clearInterval(pollTimer);
       }
-    } catch (error) {
-      stopPolling();
-      message.value = error instanceof Error ? error.message : "轮询失败";
+    } catch {
+      clearInterval(pollTimer);
     }
-  }, 1200);
+  }, 1500);
 }
 
-async function refreshSessionStatus() {
-  loading.value = true;
-  try {
-    sessionStatus.value = await requestSessionStatus();
-    message.value = "会话状态已刷新";
-  } catch (error) {
-    message.value = error instanceof Error ? error.message : "会话状态获取失败";
-  } finally {
-    loading.value = false;
-  }
+function selectTask(task: Task) {
+  selectedTask.value = task;
 }
 
-async function openLoginWindow() {
-  loading.value = true;
-  try {
-    sessionStatus.value = await requestOpenLogin();
-    message.value = "已打开登录窗口，请在浏览器中完成登录";
-  } catch (error) {
-    message.value = error instanceof Error ? error.message : "打开登录窗口失败";
-  } finally {
-    loading.value = false;
-  }
+function statusColor(s: TaskStatus) {
+  return { pending: "#f59e0b", running: "#3b82f6", completed: "#22c55e", failed: "#ef4444" }[s] ?? "#94a3b8";
 }
 
-async function startCollect() {
-  loading.value = true;
-  try {
-    const created = await requestCreateTask(productUrl.value);
-    message.value = `任务已创建：${created.taskId}`;
-    startPolling(created.taskId);
-    currentTask.value = await requestTask(created.taskId);
-  } catch (error) {
-    message.value = error instanceof Error ? error.message : "创建任务失败";
-  } finally {
-    loading.value = false;
-  }
+function statusLabel(s: TaskStatus) {
+  return { pending: "等待中", running: "采集中", completed: "已完成", failed: "失败" }[s] ?? s;
 }
-
-async function exportCurrentTask() {
-  if (!currentTask.value) return;
-  loading.value = true;
-  try {
-    const data = await requestExport(currentTask.value.id);
-    message.value = `导出成功：${data.exportJsonPath}`;
-    currentTask.value = await requestTask(data.taskId);
-  } catch (error) {
-    message.value = error instanceof Error ? error.message : "导出失败";
-  } finally {
-    loading.value = false;
-  }
-}
-
-onUnmounted(() => {
-  stopPolling();
-});
 
 onMounted(async () => {
-  try {
-    const bootstrap = await requestEnsureCollectorStarted();
-    if (bootstrap.started) {
-      collectorBase.value = bootstrap.base_url;
-      message.value = "collector 已自动启动";
-    }
-  } catch (error) {
-    message.value = error instanceof Error ? error.message : "collector 启动失败";
-  }
+  try { await invoke("ensure_backend"); } catch {}
+  await checkHealth();
+  await fetchTasks();
+  listTimer = window.setInterval(fetchTasks, 3000);
+});
+
+onUnmounted(() => {
+  clearInterval(pollTimer);
+  clearInterval(listTimer);
 });
 </script>
 
 <template>
-  <main class="container">
-    <h1>淘宝采集桌面端（前端骨架）</h1>
-
-    <section class="panel">
-      <label>Collector 地址</label>
-      <input v-model="collectorBase" placeholder="http://127.0.0.1:4318" />
-
-      <label>商品链接</label>
-      <input v-model="productUrl" placeholder="请输入商品链接" />
-
-      <div class="actions">
-        <button :disabled="loading" @click="refreshSessionStatus">检查会话</button>
-        <button :disabled="loading" @click="openLoginWindow">打开登录窗口</button>
-        <button :disabled="loading || !productUrl" @click="startCollect">开始采集</button>
-        <button :disabled="loading || !canExport" @click="exportCurrentTask">导出 JSON</button>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-icon">🛒</span>
+        <span class="brand-name">淘宝采集</span>
+        <span class="badge" :class="backendOk ? 'badge-ok' : 'badge-err'">
+          {{ backendOk ? "已连接" : "未连接" }}
+        </span>
       </div>
-    </section>
 
-    <section class="panel">
-      <h2>会话状态</h2>
-      <pre>{{ sessionStatus ?? "尚未获取" }}</pre>
-    </section>
+      <div class="input-group">
+        <input
+          v-model="url"
+          class="url-input"
+          placeholder="粘贴淘宝商品链接..."
+          @keydown.enter="createTask"
+        />
+        <button class="btn-primary" :disabled="loading || !url.trim()" @click="createTask">
+          {{ loading ? "..." : "采集" }}
+        </button>
+      </div>
 
-    <section class="panel">
-      <h2>任务状态</h2>
-      <pre>{{ currentTask ?? "尚未创建任务" }}</pre>
-    </section>
+      <div class="task-list-header">
+        任务列表
+        <span v-if="runningCount" class="running-badge">{{ runningCount }} 运行中</span>
+      </div>
 
-    <p class="message">{{ message }}</p>
-  </main>
+      <div class="task-list">
+        <div
+          v-for="task in tasks"
+          :key="task.id"
+          class="task-item"
+          :class="{ active: selectedTask?.id === task.id }"
+          @click="selectTask(task)"
+        >
+          <div class="task-item-top">
+            <span class="status-dot" :style="{ background: statusColor(task.status) }"></span>
+            <span class="task-status">{{ statusLabel(task.status) }}</span>
+            <button class="btn-del" @click.stop="deleteTask(task.id)">×</button>
+          </div>
+          <div class="task-url">{{ task.url }}</div>
+        </div>
+        <div v-if="!tasks.length" class="empty">暂无任务</div>
+      </div>
+    </aside>
+
+    <main class="detail">
+      <template v-if="selectedTask">
+        <div class="detail-header">
+          <span class="status-pill" :style="{ background: statusColor(selectedTask.status) }">
+            {{ statusLabel(selectedTask.status) }}
+          </span>
+          <span class="detail-id">{{ selectedTask.id }}</span>
+        </div>
+
+        <div class="detail-url">{{ selectedTask.url }}</div>
+
+        <template v-if="selectedTask.result">
+          <div class="result-card">
+            <div class="result-title">{{ selectedTask.result.title ?? "—" }}</div>
+            <div class="result-row">
+              <span class="result-label">价格</span>
+              <span class="result-value price">{{ selectedTask.result.price_text ?? "—" }}</span>
+            </div>
+            <div class="result-row">
+              <span class="result-label">店铺</span>
+              <span class="result-value">{{ selectedTask.result.shop_name ?? "—" }}</span>
+            </div>
+          </div>
+
+          <div v-if="selectedTask.result.images?.length" class="images-grid">
+            <img
+              v-for="(img, i) in selectedTask.result.images.slice(0, 6)"
+              :key="i"
+              :src="img"
+              class="thumb"
+            />
+          </div>
+        </template>
+
+        <div v-if="selectedTask.error_message" class="error-box">
+          {{ selectedTask.error_message }}
+        </div>
+
+        <div v-if="selectedTask.status === 'pending' || selectedTask.status === 'running'" class="hint-box">
+          请在 Chrome 中安装采集插件，插件将自动打开页面并抓取数据
+        </div>
+      </template>
+
+      <div v-else class="empty-detail">
+        <div class="empty-icon">🔍</div>
+        <div>选择左侧任务查看详情，或输入链接开始采集</div>
+      </div>
+    </main>
+  </div>
 </template>

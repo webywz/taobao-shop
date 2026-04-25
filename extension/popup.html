@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { width: 280px; padding: 16px; font-family: system-ui; background: #0f0f13; color: #e2e8f0; margin: 0; }
+  h3 { margin: 0 0 12px; font-size: 14px; color: #a78bfa; }
+  .status { font-size: 12px; color: #94a3b8; margin-bottom: 8px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #22c55e; margin-right: 6px; }
+  .dot.off { background: #ef4444; }
+  p { font-size: 11px; color: #64748b; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+  <h3>淘宝商品采集助手</h3>
+  <div class="status"><span class="dot" id="dot"></span><span id="statusText">检查中...</span></div>
+  <p>请在桌面端输入商品链接并触发采集</p>
+  <script src="popup.js"></script>
+</body>
+</html>

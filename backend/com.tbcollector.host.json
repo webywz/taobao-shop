@@ -1,0 +1,7 @@
+{
+  "name": "com.tbcollector.host",
+  "description": "淘宝采集桌面端 Native Messaging Host",
+  "path": "/Users/weize/Desktop/tbTaui/backend/native_host.py",
+  "type": "stdio",
+  "allowed_origins": []
+}

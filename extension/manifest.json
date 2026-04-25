@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "淘宝商品采集助手",
+  "version": "1.0.0",
+  "description": "配合桌面端采集淘宝商品数据",
+  "permissions": ["nativeMessaging", "tabs", "scripting", "storage"],
+  "host_permissions": ["https://*.taobao.com/*", "http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.taobao.com/item*", "https://item.taobao.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
