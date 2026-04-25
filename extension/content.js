@@ -94,6 +94,39 @@
     );
   }
 
+  function isLogoLikeElement(element) {
+    const ownMarkers = [
+      element.alt,
+      element.getAttribute("title") || "",
+      element.getAttribute("aria-label") || "",
+      element.getAttribute("data-name") || "",
+      element.getAttribute("data-title") || "",
+      element.id,
+      typeof element.className === "string" ? element.className : ""
+    ].join(" ");
+
+    if (/\blogo\b/i.test(ownMarkers) || /店铺logo|品牌logo/i.test(ownMarkers)) {
+      return true;
+    }
+
+    let current = element.parentElement;
+    for (let depth = 0; current && depth < 4; depth += 1, current = current.parentElement) {
+      const containerMarkers = [
+        current.id,
+        typeof current.className === "string" ? current.className : "",
+        current.getAttribute("title") || "",
+        current.getAttribute("aria-label") || "",
+        current.getAttribute("data-name") || ""
+      ].join(" ");
+
+      if (/\blogo\b/i.test(containerMarkers) || /店铺logo|品牌logo/i.test(containerMarkers)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   function normalizeImageUrl(rawUrl) {
     try {
       let urlStr = rawUrl
@@ -306,6 +339,7 @@
 
       for (const element of elements) {
         if (isInExcludedSection(element)) continue;
+        if (isLogoLikeElement(element)) continue;
 
         const rawUrl = collectImageUrlFromElement(element);
         const url = rawUrl ? normalizeImageUrl(rawUrl) : null;
@@ -342,6 +376,7 @@
     for (const { doc, topOffset, fromIframe } of collectAccessibleDocuments()) {
       for (const element of Array.from(doc.images)) {
         if (isInExcludedSection(element)) continue;
+        if (isLogoLikeElement(element)) continue;
 
         const rawUrl = collectImageUrlFromElement(element);
         const url = rawUrl ? normalizeImageUrl(rawUrl) : null;
@@ -509,6 +544,14 @@
         "[class*='mainPic'] img",
         "[class*='main-image'] img"
       ];
+      const skuSelectors = [
+        "[class*='sku'] img",
+        "[class*='Sku'] img",
+        "[class*='prop'] img",
+        "[class*='spec'] img",
+        "[data-sku] img",
+        ".J_TSaleProp img"
+      ];
       const detailPrimarySelectors = [
         "#description img",
         "#J_DivItemDesc img",
@@ -568,6 +611,17 @@
                 (candidate.top || 0) < window.innerHeight * 1.2
             )
           ).slice(0, 12);
+      const skuCandidates = dedupeCandidates([
+        ...extractBySelectors(skuSelectors, 50, { extractSku: true }),
+        ...rankByVisualPriority(
+          allCandidates.filter(
+            candidate =>
+              candidate.inSkuRegion &&
+              (candidate.width || 0) >= 40 &&
+              (candidate.height || 0) >= 40
+          )
+        ).slice(0, 40)
+      ]).slice(0, 40);
 
       const detailCandidates = dedupeCandidates([
         ...extractBySelectors(detailPrimarySelectors, 60, {
@@ -580,12 +634,12 @@
           checkAllDocs: true,
           cutoffTop: recommendationCutoffTop
         }),
-        ...selectDetailCandidates(allCandidates, [...fallbackMain])
+        ...selectDetailCandidates(allCandidates, [...fallbackMain, ...skuCandidates])
       ]).slice(0, 30);
       const fallbackDetailCandidates = detailCandidates.length
         ? detailCandidates
         : dedupeCandidates(
-            excludeKnownProductImages(allCandidates, [...fallbackMain]).filter(candidate => {
+            excludeKnownProductImages(allCandidates, [...fallbackMain, ...skuCandidates]).filter(candidate => {
               const width = candidate.width || 0;
               const height = candidate.height || 0;
               const area = candidate.area || width * height;
@@ -599,9 +653,23 @@
           ).slice(0, 30);
 
       const mainImages = fallbackMain.map(candidate => candidate.url);
+      const colorImages = skuCandidates.map(candidate => candidate.url);
       const detailImages = fallbackDetailCandidates
         .map(candidate => candidate.url)
-        .filter(url => !mainImages.includes(url));
+        .filter(url => !mainImages.includes(url) && !colorImages.includes(url));
+      const seenSkus = new Set();
+      const skus = skuCandidates
+        .filter(candidate => candidate.skuName)
+        .map(candidate => ({
+          name: candidate.skuName,
+          image: candidate.url
+        }))
+        .filter(item => {
+          const key = `${item.name}|${buildDedupeKey(item.image)}`;
+          if (seenSkus.has(key)) return false;
+          seenSkus.add(key);
+          return true;
+        });
 
       const result = {
         title,
@@ -609,9 +677,9 @@
         shop_name: shopName,
         images: mainImages,
         video_url: getVideoUrl(),
-        color_images: [],
+        color_images: colorImages,
         detail_images: detailImages,
-        skus: []
+        skus
       };
 
       chrome.runtime.sendMessage(

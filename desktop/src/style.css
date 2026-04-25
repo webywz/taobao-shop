@@ -90,6 +90,20 @@ body {
 .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-primary:not(:disabled):hover { opacity: 0.85; }
 
+.btn-link {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #a78bfa;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn-link:disabled {
+  color: #475569;
+  cursor: not-allowed;
+}
+
 .btn-secondary {
   background: #151528;
   color: #dbe4f0;
@@ -259,6 +273,45 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   padding-top: 4px;
+}
+
+.option-panel {
+  background: #13131f;
+  border: 1px solid #1e1e2e;
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.option-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.option-grid,
+.site-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.option-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #cbd5e1;
+  padding: 8px 10px;
+  border: 1px solid #1e1e2e;
+  border-radius: 8px;
+  background: #0d1322;
+}
+
+.option-item input {
+  accent-color: #7c3aed;
 }
 
 .media-section {

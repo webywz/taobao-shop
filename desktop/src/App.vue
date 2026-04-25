@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 
 type TaskStatus = "pending" | "running" | "completed" | "failed";
 
@@ -15,6 +15,7 @@ type TaskResult = {
   shop_name?: string;
   images?: string[];
   video_url?: string | null;
+  color_images?: string[];
   detail_images?: string[];
   skus?: SkuItem[];
 };
@@ -29,28 +30,84 @@ type Task = {
   error_message?: string;
 };
 
-type DownloadTarget = "all" | "main" | "detail" | "video";
+type DownloadTarget = "selected" | "all" | "main" | "color" | "detail" | "video";
 
 type DownloadAssetsResult = {
   saved_dir: string;
   main_count: number;
+  color_count: number;
   detail_count: number;
   video_count: number;
+  record_path?: string | null;
 };
+
+type DownloadOptions = {
+  includeMain: boolean;
+  includeColor: boolean;
+  includeDetail: boolean;
+  includeVideo: boolean;
+  writeRecord: boolean;
+  dedupeColor: boolean;
+  enableTaobao: boolean;
+  enableTmall: boolean;
+};
+
+const DOWNLOAD_OPTIONS_KEY = "tbTaui.download-options.v2";
+
+function loadDownloadOptions(): DownloadOptions {
+  const defaults: DownloadOptions = {
+    includeMain: true,
+    includeColor: true,
+    includeDetail: true,
+    includeVideo: true,
+    writeRecord: true,
+    dedupeColor: true,
+    enableTaobao: true,
+    enableTmall: true,
+  };
+
+  try {
+    const raw = localStorage.getItem(DOWNLOAD_OPTIONS_KEY);
+    if (!raw) return defaults;
+    return { ...defaults, ...JSON.parse(raw) };
+  } catch {
+    return defaults;
+  }
+}
 
 const url = ref("");
 const tasks = ref<Task[]>([]);
 const selectedTask = ref<Task | null>(null);
 const loading = ref(false);
 const backendOk = ref(false);
+const createError = ref("");
 const downloadTarget = ref<DownloadTarget | null>(null);
 const downloadMessage = ref("");
 const downloadError = ref("");
+const recordMessage = ref("");
+const downloadOptions = reactive(loadDownloadOptions());
 let pollTimer: number | undefined;
 let listTimer: number | undefined;
 
+watch(
+  downloadOptions,
+  value => {
+    localStorage.setItem(DOWNLOAD_OPTIONS_KEY, JSON.stringify(value));
+  },
+  { deep: true }
+);
+
 const runningCount = computed(() => tasks.value.filter(t => t.status === "running" || t.status === "pending").length);
 const selectedResult = computed(() => selectedTask.value?.result ?? null);
+const selectedDownloadCount = computed(() => {
+  return [
+    downloadOptions.includeMain,
+    downloadOptions.includeColor,
+    downloadOptions.includeDetail,
+    downloadOptions.includeVideo,
+    downloadOptions.writeRecord
+  ].filter(Boolean).length;
+});
 
 async function checkHealth() {
   try {
@@ -68,14 +125,35 @@ async function fetchTasks() {
   } catch {}
 }
 
+function validateUrlBySiteSwitch(input: string) {
+  try {
+    const parsed = new URL(input);
+    const host = parsed.hostname.toLowerCase();
+    if (host.includes("tmall.com") && !downloadOptions.enableTmall) {
+      return "当前已关闭新版天猫采集";
+    }
+    if (host.includes("taobao.com") && !host.includes("tmall.com") && !downloadOptions.enableTaobao) {
+      return "当前已关闭新版淘宝采集";
+    }
+    return "";
+  } catch {
+    return "链接格式不正确";
+  }
+}
+
 async function createTask() {
-  if (!url.value.trim()) return;
+  const inputUrl = url.value.trim();
+  if (!inputUrl) return;
+
+  createError.value = validateUrlBySiteSwitch(inputUrl);
+  if (createError.value) return;
+
   loading.value = true;
   try {
     const res = await invoke<{ task_id: string }>("backend_request", {
       method: "POST",
       path: "/tasks",
-      body: { url: url.value.trim() },
+      body: { url: inputUrl },
     });
     url.value = "";
     await fetchTasks();
@@ -83,7 +161,7 @@ async function createTask() {
     selectedTask.value = task;
     startPoll(res.task_id);
   } catch (e) {
-    console.error(e);
+    createError.value = e instanceof Error ? e.message : "创建任务失败";
   } finally {
     loading.value = false;
   }
@@ -115,6 +193,7 @@ function selectTask(task: Task) {
   selectedTask.value = task;
   downloadMessage.value = "";
   downloadError.value = "";
+  recordMessage.value = "";
 }
 
 function statusColor(s: TaskStatus) {
@@ -127,20 +206,23 @@ function statusLabel(s: TaskStatus) {
 
 function downloadLabel(target: DownloadTarget) {
   return {
+    selected: `按勾选下载 (${selectedDownloadCount.value})`,
     all: "下载全部资源",
     main: "下载主图",
+    color: "下载颜色图",
     detail: "下载详情图",
     video: "下载视频"
   }[target];
 }
 
 function getDownloadCount(result: DownloadAssetsResult, target: DownloadTarget) {
-  if (target === "all") {
-    return result.main_count + result.detail_count + result.video_count;
+  if (target === "selected" || target === "all") {
+    return result.main_count + result.color_count + result.detail_count + result.video_count;
   }
 
   return {
     main: result.main_count,
+    color: result.color_count,
     detail: result.detail_count,
     video: result.video_count
   }[target];
@@ -151,11 +233,19 @@ function hasMedia(target: DownloadTarget) {
   if (!result) return false;
 
   return {
+    selected:
+      (downloadOptions.includeMain && Boolean(result.images?.length)) ||
+      (downloadOptions.includeColor && Boolean(result.color_images?.length)) ||
+      (downloadOptions.includeDetail && Boolean(result.detail_images?.length)) ||
+      (downloadOptions.includeVideo && Boolean(result.video_url)) ||
+      downloadOptions.writeRecord,
     all:
       Boolean(result.images?.length) ||
+      Boolean(result.color_images?.length) ||
       Boolean(result.detail_images?.length) ||
       Boolean(result.video_url),
     main: Boolean(result.images?.length),
+    color: Boolean(result.color_images?.length),
     detail: Boolean(result.detail_images?.length),
     video: Boolean(result.video_url)
   }[target];
@@ -165,32 +255,120 @@ function isDownloading(target: DownloadTarget) {
   return downloadTarget.value === target;
 }
 
+function getDownloadFlags(target: DownloadTarget) {
+  if (target === "selected") {
+    return {
+      includeMain: downloadOptions.includeMain,
+      includeColor: downloadOptions.includeColor,
+      includeDetail: downloadOptions.includeDetail,
+      includeVideo: downloadOptions.includeVideo,
+      writeRecord: downloadOptions.writeRecord,
+      dedupeColor: downloadOptions.dedupeColor
+    };
+  }
+
+  return {
+    includeMain: target === "all" || target === "main",
+    includeColor: target === "all" || target === "color",
+    includeDetail: target === "all" || target === "detail",
+    includeVideo: target === "all" || target === "video",
+    writeRecord: downloadOptions.writeRecord,
+    dedupeColor: downloadOptions.dedupeColor
+  };
+}
+
 async function handleDownload(target: DownloadTarget) {
   if (!selectedTask.value?.result) return;
+
+  const flags = getDownloadFlags(target);
+  if (!flags.includeMain && !flags.includeColor && !flags.includeDetail && !flags.includeVideo && !flags.writeRecord) {
+    downloadError.value = "请至少勾选一个下载项或记录";
+    return;
+  }
 
   downloadTarget.value = target;
   downloadMessage.value = "";
   downloadError.value = "";
+  recordMessage.value = "";
 
   try {
     const result = await invoke<DownloadAssetsResult>("download_assets", {
       input: {
         task_id: selectedTask.value.id,
+        source_url: selectedTask.value.url,
         title: selectedTask.value.result.title ?? null,
+        shop_name: selectedTask.value.result.shop_name ?? null,
+        price_text: selectedTask.value.result.price_text ?? null,
         target,
         main_images: selectedTask.value.result.images ?? [],
-        color_images: [],
+        color_images: selectedTask.value.result.color_images ?? [],
         detail_images: selectedTask.value.result.detail_images ?? [],
-        video_url: selectedTask.value.result.video_url ?? null
+        video_url: selectedTask.value.result.video_url ?? null,
+        include_main: flags.includeMain,
+        include_color: flags.includeColor,
+        include_detail: flags.includeDetail,
+        include_video: flags.includeVideo,
+        dedupe_color: flags.dedupeColor,
+        write_record: flags.writeRecord
       }
     });
 
     downloadMessage.value = `已保存 ${getDownloadCount(result, target)} 个文件到 ${result.saved_dir}`;
+    if (result.record_path) {
+      recordMessage.value = `记录文件已生成：${result.record_path}`;
+    }
   } catch (error) {
     downloadError.value = error instanceof Error ? error.message : "下载失败";
   } finally {
     downloadTarget.value = null;
   }
+}
+
+function formatDate(timestamp: number) {
+  return new Date(timestamp * 1000).toLocaleString("zh-CN", { hour12: false });
+}
+
+function escapeCsv(value: unknown) {
+  const text = String(value ?? "");
+  if (/[",\n]/.test(text)) {
+    return `"${text.replace(/"/g, "\"\"")}"`;
+  }
+  return text;
+}
+
+function downloadTextFile(filename: string, content: string, mimeType: string) {
+  const blob = new Blob([content], { type: mimeType });
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(objectUrl);
+}
+
+function exportTaskRecords() {
+  if (!tasks.value.length) {
+    recordMessage.value = "暂无可导出的记录";
+    return;
+  }
+
+  const header = ["任务ID", "链接", "标题", "状态", "店铺", "价格", "主图数", "颜色图数", "详情图数", "视频", "更新时间"];
+  const rows = tasks.value.map(task => [
+    task.id,
+    task.url,
+    task.result?.title ?? "",
+    statusLabel(task.status),
+    task.result?.shop_name ?? "",
+    task.result?.price_text ?? "",
+    task.result?.images?.length ?? 0,
+    task.result?.color_images?.length ?? 0,
+    task.result?.detail_images?.length ?? 0,
+    task.result?.video_url ? "有" : "无",
+    formatDate(task.updated_at)
+  ]);
+  const content = [header, ...rows].map(row => row.map(escapeCsv).join(",")).join("\n");
+  downloadTextFile(`tbTaui-records-${Date.now()}.csv`, content, "text/csv;charset=utf-8");
+  recordMessage.value = "采集清单已导出为 CSV";
 }
 
 onMounted(async () => {
@@ -228,10 +406,12 @@ onUnmounted(() => {
           {{ loading ? "..." : "采集" }}
         </button>
       </div>
+      <div v-if="createError" class="error-box">{{ createError }}</div>
 
       <div class="task-list-header">
         任务列表
         <span v-if="runningCount" class="running-badge">{{ runningCount }} 运行中</span>
+        <button class="btn-link" :disabled="!tasks.length" @click="exportTaskRecords">导出记录</button>
       </div>
 
       <div class="task-list">
@@ -284,15 +464,64 @@ onUnmounted(() => {
               <span class="result-value">{{ selectedTask.result.video_url ? "已抓取" : "无" }}</span>
             </div>
             <div class="result-row">
+              <span class="result-label">颜色图片</span>
+              <span class="result-value">{{ selectedTask.result.color_images?.length || 0 }} 张</span>
+            </div>
+            <div class="result-row">
               <span class="result-label">详情图片</span>
               <span class="result-value">{{ selectedTask.result.detail_images?.length || 0 }} 张</span>
             </div>
+            <div class="option-panel">
+              <div class="option-title">下载选项</div>
+              <div class="option-grid">
+                <label class="option-item">
+                  <input v-model="downloadOptions.includeMain" type="checkbox" />
+                  <span>主图</span>
+                </label>
+                <label class="option-item">
+                  <input v-model="downloadOptions.includeColor" type="checkbox" />
+                  <span>颜色</span>
+                </label>
+                <label class="option-item">
+                  <input v-model="downloadOptions.includeDetail" type="checkbox" />
+                  <span>详情</span>
+                </label>
+                <label class="option-item">
+                  <input v-model="downloadOptions.includeVideo" type="checkbox" />
+                  <span>主图视频</span>
+                </label>
+                <label class="option-item">
+                  <input v-model="downloadOptions.writeRecord" type="checkbox" />
+                  <span>记录</span>
+                </label>
+                <label class="option-item">
+                  <input v-model="downloadOptions.dedupeColor" type="checkbox" />
+                  <span>过滤重复颜色</span>
+                </label>
+              </div>
+              <div class="site-grid">
+                <label class="option-item">
+                  <input v-model="downloadOptions.enableTaobao" type="checkbox" />
+                  <span>新版淘宝</span>
+                </label>
+                <label class="option-item">
+                  <input v-model="downloadOptions.enableTmall" type="checkbox" />
+                  <span>新版天猫</span>
+                </label>
+              </div>
+            </div>
             <div class="action-row">
+              <button class="btn-primary" :disabled="!hasMedia('selected') || !!downloadTarget" @click="handleDownload('selected')">
+                {{ isDownloading("selected") ? "下载中..." : downloadLabel("selected") }}
+              </button>
               <button class="btn-secondary" :disabled="!hasMedia('all') || !!downloadTarget" @click="handleDownload('all')">
                 {{ isDownloading("all") ? "下载中..." : downloadLabel("all") }}
               </button>
               <button class="btn-secondary" :disabled="!hasMedia('main') || !!downloadTarget" @click="handleDownload('main')">
                 {{ isDownloading("main") ? "下载中..." : downloadLabel("main") }}
+              </button>
+              <button class="btn-secondary" :disabled="!hasMedia('color') || !!downloadTarget" @click="handleDownload('color')">
+                {{ isDownloading("color") ? "下载中..." : downloadLabel("color") }}
               </button>
               <button class="btn-secondary" :disabled="!hasMedia('detail') || !!downloadTarget" @click="handleDownload('detail')">
                 {{ isDownloading("detail") ? "下载中..." : downloadLabel("detail") }}
@@ -304,6 +533,7 @@ onUnmounted(() => {
           </div>
 
           <div v-if="downloadMessage" class="success-box">{{ downloadMessage }}</div>
+          <div v-if="recordMessage" class="hint-box">{{ recordMessage }}</div>
           <div v-if="downloadError" class="error-box">{{ downloadError }}</div>
 
           <section v-if="selectedTask.result.images?.length" class="media-section">
@@ -318,6 +548,27 @@ onUnmounted(() => {
               <a
                 v-for="(img, i) in selectedTask.result.images"
                 :key="`main-${i}`"
+                :href="img"
+                target="_blank"
+                rel="noreferrer"
+                class="media-link"
+              >
+                <img :src="img" class="thumb" />
+              </a>
+            </div>
+          </section>
+
+          <section v-if="selectedTask.result.color_images?.length" class="media-section">
+            <div class="media-header">
+              <div>
+                <div class="media-title">颜色图</div>
+                <div class="media-meta">{{ selectedTask.result.color_images.length }} 张</div>
+              </div>
+            </div>
+            <div class="images-grid">
+              <a
+                v-for="(img, i) in selectedTask.result.color_images"
+                :key="`color-${i}`"
                 :href="img"
                 target="_blank"
                 rel="noreferrer"

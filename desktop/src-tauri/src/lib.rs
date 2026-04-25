@@ -18,12 +18,21 @@ struct AppState {
 #[derive(Debug, Deserialize)]
 struct DownloadAssetsInput {
   task_id: String,
+  source_url: Option<String>,
   title: Option<String>,
+  shop_name: Option<String>,
+  price_text: Option<String>,
   target: Option<String>,
   main_images: Vec<String>,
   color_images: Vec<String>,
   detail_images: Vec<String>,
   video_url: Option<String>,
+  include_main: Option<bool>,
+  include_color: Option<bool>,
+  include_detail: Option<bool>,
+  include_video: Option<bool>,
+  dedupe_color: Option<bool>,
+  write_record: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -33,6 +42,7 @@ struct DownloadAssetsOutput {
   color_count: usize,
   detail_count: usize,
   video_count: usize,
+  record_path: Option<String>,
 }
 
 fn backend_dir() -> Result<PathBuf, String> {
@@ -171,6 +181,17 @@ fn infer_extension(url: &str, content_type: Option<&str>, default_ext: &str) -> 
   default_ext.to_string()
 }
 
+fn normalize_asset_key(url: &str) -> String {
+  match reqwest::Url::parse(url) {
+    Ok(mut parsed) => {
+      parsed.set_query(None);
+      parsed.set_fragment(None);
+      format!("{}{}", parsed.origin().ascii_serialization(), parsed.path()).to_ascii_lowercase()
+    }
+    Err(_) => url.trim().to_ascii_lowercase(),
+  }
+}
+
 fn resolve_download_dir(task_id: &str, title: Option<&str>) -> Result<PathBuf, String> {
   let base_dir = dirs::download_dir()
     .or_else(|| std::env::current_dir().ok())
@@ -233,6 +254,50 @@ async fn download_group(
   Ok(saved_count)
 }
 
+fn write_download_record(
+  root_dir: &Path,
+  input: &DownloadAssetsInput,
+  main_count: usize,
+  color_count: usize,
+  detail_count: usize,
+  video_count: usize,
+) -> Result<Option<String>, String> {
+  if !input.write_record.unwrap_or(false) {
+    return Ok(None);
+  }
+
+  let record_path = root_dir.join("record.json");
+  let payload = serde_json::json!({
+    "task_id": input.task_id,
+    "source_url": input.source_url,
+    "title": input.title,
+    "shop_name": input.shop_name,
+    "price_text": input.price_text,
+    "saved_dir": root_dir.display().to_string(),
+    "saved_at": chrono::Utc::now().to_rfc3339(),
+    "options": {
+      "include_main": input.include_main.unwrap_or(false),
+      "include_color": input.include_color.unwrap_or(false),
+      "include_detail": input.include_detail.unwrap_or(false),
+      "include_video": input.include_video.unwrap_or(false),
+      "dedupe_color": input.dedupe_color.unwrap_or(false),
+      "write_record": input.write_record.unwrap_or(false),
+    },
+    "counts": {
+      "main": main_count,
+      "color": color_count,
+      "detail": detail_count,
+      "video": video_count,
+    }
+  });
+
+  let content = serde_json::to_vec_pretty(&payload)
+    .map_err(|e| format!("failed to serialize record: {}", e))?;
+  fs::write(&record_path, content)
+    .map_err(|e| format!("failed to write record file: {}", e))?;
+  Ok(Some(record_path.display().to_string()))
+}
+
 #[tauri::command]
 async fn download_assets(input: DownloadAssetsInput) -> Result<DownloadAssetsOutput, String> {
   let root_dir = resolve_download_dir(&input.task_id, input.title.as_deref())?;
@@ -241,31 +306,46 @@ async fn download_assets(input: DownloadAssetsInput) -> Result<DownloadAssetsOut
     .build()
     .map_err(|e| format!("failed to create download client: {}", e))?;
 
-  let target = input.target.unwrap_or_else(|| "all".to_string());
+  let target = input.target.clone().unwrap_or_else(|| "all".to_string());
+  let include_main = input.include_main.unwrap_or(target == "all" || target == "main");
+  let include_color = input.include_color.unwrap_or(target == "all" || target == "color");
+  let include_detail = input.include_detail.unwrap_or(target == "all" || target == "detail");
+  let include_video = input.include_video.unwrap_or(target == "all" || target == "video");
 
-  let main_count = if target == "all" || target == "main" {
+  let main_count = if include_main {
     download_group(&client, &input.main_images, &root_dir, "cover", "main", "jpg").await?
   } else {
     0
   };
 
-  let color_count = if target == "all" || target == "color" {
-    let _ = &input.color_images;
-    0
+  let color_urls = if input.dedupe_color.unwrap_or(false) {
+    let mut seen = HashSet::new();
+    input
+      .color_images
+      .iter()
+      .filter(|url| seen.insert(normalize_asset_key(url)))
+      .cloned()
+      .collect::<Vec<_>>()
+  } else {
+    input.color_images.clone()
+  };
+
+  let color_count = if include_color {
+    download_group(&client, &color_urls, &root_dir, "sku", "sku", "jpg").await?
   } else {
     0
   };
 
-  let detail_count = if target == "all" || target == "detail" {
+  let detail_count = if include_detail {
     download_group(&client, &input.detail_images, &root_dir, "detail", "detail", "jpg").await?
   } else {
     0
   };
 
-  let video_count = if (target == "all" || target == "video") && input.video_url.as_deref().is_some() {
+  let video_count = if include_video && input.video_url.as_deref().is_some() {
     download_group(
       &client,
-      &[input.video_url.unwrap_or_default()],
+      &[input.video_url.clone().unwrap_or_default()],
       &root_dir,
       "video",
       "video",
@@ -276,12 +356,22 @@ async fn download_assets(input: DownloadAssetsInput) -> Result<DownloadAssetsOut
     0
   };
 
+  let record_path = write_download_record(
+    &root_dir,
+    &input,
+    main_count,
+    color_count,
+    detail_count,
+    video_count,
+  )?;
+
   Ok(DownloadAssetsOutput {
     saved_dir: root_dir.display().to_string(),
     main_count,
     color_count,
     detail_count,
     video_count,
+    record_path,
   })
 }
 
