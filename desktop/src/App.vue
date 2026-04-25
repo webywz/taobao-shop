@@ -15,7 +15,6 @@ type TaskResult = {
   shop_name?: string;
   images?: string[];
   video_url?: string | null;
-  color_images?: string[];
   detail_images?: string[];
   skus?: SkuItem[];
 };
@@ -30,12 +29,11 @@ type Task = {
   error_message?: string;
 };
 
-type DownloadTarget = "all" | "main" | "color" | "detail" | "video";
+type DownloadTarget = "all" | "main" | "detail" | "video";
 
 type DownloadAssetsResult = {
   saved_dir: string;
   main_count: number;
-  color_count: number;
   detail_count: number;
   video_count: number;
 };
@@ -131,7 +129,6 @@ function downloadLabel(target: DownloadTarget) {
   return {
     all: "下载全部资源",
     main: "下载主图",
-    color: "下载颜色图",
     detail: "下载详情图",
     video: "下载视频"
   }[target];
@@ -139,12 +136,11 @@ function downloadLabel(target: DownloadTarget) {
 
 function getDownloadCount(result: DownloadAssetsResult, target: DownloadTarget) {
   if (target === "all") {
-    return result.main_count + result.color_count + result.detail_count + result.video_count;
+    return result.main_count + result.detail_count + result.video_count;
   }
 
   return {
     main: result.main_count,
-    color: result.color_count,
     detail: result.detail_count,
     video: result.video_count
   }[target];
@@ -157,11 +153,9 @@ function hasMedia(target: DownloadTarget) {
   return {
     all:
       Boolean(result.images?.length) ||
-      Boolean(result.color_images?.length) ||
       Boolean(result.detail_images?.length) ||
       Boolean(result.video_url),
     main: Boolean(result.images?.length),
-    color: Boolean(result.color_images?.length),
     detail: Boolean(result.detail_images?.length),
     video: Boolean(result.video_url)
   }[target];
@@ -185,7 +179,7 @@ async function handleDownload(target: DownloadTarget) {
         title: selectedTask.value.result.title ?? null,
         target,
         main_images: selectedTask.value.result.images ?? [],
-        color_images: selectedTask.value.result.color_images ?? [],
+        color_images: [],
         detail_images: selectedTask.value.result.detail_images ?? [],
         video_url: selectedTask.value.result.video_url ?? null
       }
@@ -290,10 +284,6 @@ onUnmounted(() => {
               <span class="result-value">{{ selectedTask.result.video_url ? "已抓取" : "无" }}</span>
             </div>
             <div class="result-row">
-              <span class="result-label">颜色图片</span>
-              <span class="result-value">{{ selectedTask.result.color_images?.length || 0 }} 张</span>
-            </div>
-            <div class="result-row">
               <span class="result-label">详情图片</span>
               <span class="result-value">{{ selectedTask.result.detail_images?.length || 0 }} 张</span>
             </div>
@@ -303,9 +293,6 @@ onUnmounted(() => {
               </button>
               <button class="btn-secondary" :disabled="!hasMedia('main') || !!downloadTarget" @click="handleDownload('main')">
                 {{ isDownloading("main") ? "下载中..." : downloadLabel("main") }}
-              </button>
-              <button class="btn-secondary" :disabled="!hasMedia('color') || !!downloadTarget" @click="handleDownload('color')">
-                {{ isDownloading("color") ? "下载中..." : downloadLabel("color") }}
               </button>
               <button class="btn-secondary" :disabled="!hasMedia('detail') || !!downloadTarget" @click="handleDownload('detail')">
                 {{ isDownloading("detail") ? "下载中..." : downloadLabel("detail") }}
@@ -331,27 +318,6 @@ onUnmounted(() => {
               <a
                 v-for="(img, i) in selectedTask.result.images"
                 :key="`main-${i}`"
-                :href="img"
-                target="_blank"
-                rel="noreferrer"
-                class="media-link"
-              >
-                <img :src="img" class="thumb" />
-              </a>
-            </div>
-          </section>
-
-          <section v-if="selectedTask.result.color_images?.length" class="media-section">
-            <div class="media-header">
-              <div>
-                <div class="media-title">颜色图</div>
-                <div class="media-meta">{{ selectedTask.result.color_images.length }} 张</div>
-              </div>
-            </div>
-            <div class="images-grid">
-              <a
-                v-for="(img, i) in selectedTask.result.color_images"
-                :key="`color-${i}`"
                 :href="img"
                 target="_blank"
                 rel="noreferrer"

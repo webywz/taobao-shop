@@ -135,6 +135,93 @@
     return selectors.join(", ");
   }
 
+  const EXCLUDED_SECTION_KEYWORDS = [
+    "88vip",
+    "88 vip",
+    "本店推荐",
+    "店铺推荐",
+    "推荐商品",
+    "猜你喜欢",
+    "看了又看",
+    "相似推荐"
+  ];
+
+  const TRAILING_SECTION_KEYWORDS = [
+    "本店推荐",
+    "店铺推荐",
+    "推荐商品",
+    "猜你喜欢",
+    "看了又看",
+    "相似推荐"
+  ];
+
+  const EXCLUDED_SECTION_SELECTOR = [
+    "[class*='recommend']",
+    "[id*='recommend']",
+    "[class*='guess']",
+    "[id*='guess']",
+    "[class*='similar']",
+    "[id*='similar']",
+    "[class*='related']",
+    "[id*='related']",
+    "[class*='vip']",
+    "[id*='vip']"
+  ].join(", ");
+
+  function normalizeSectionText(value) {
+    return (value || "").replace(/\s+/g, "").toLowerCase();
+  }
+
+  function containsSectionKeyword(value, keywords) {
+    const normalized = normalizeSectionText(value);
+    return keywords.some(keyword => normalized.includes(normalizeSectionText(keyword)));
+  }
+
+  function isInExcludedSection(element) {
+    if (EXCLUDED_SECTION_SELECTOR && element.closest(EXCLUDED_SECTION_SELECTOR)) {
+      return true;
+    }
+
+    let current = element;
+    for (let depth = 0; current && depth < 7; depth += 1, current = current.parentElement) {
+      const markerText = [
+        current.id,
+        typeof current.className === "string" ? current.className : "",
+        current.getAttribute("data-spm") || "",
+        current.getAttribute("aria-label") || "",
+        current.getAttribute("title") || "",
+        (current.textContent || "").slice(0, 160)
+      ].join(" ");
+
+      if (containsSectionKeyword(markerText, EXCLUDED_SECTION_KEYWORDS)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function getRecommendationCutoffTop() {
+    let cutoffTop = null;
+    const nodes = Array.from(document.querySelectorAll("h2, h3, h4, strong, [class], [id], [data-spm]")).slice(0, 2000);
+
+    for (const node of nodes) {
+      if (!(node instanceof HTMLElement)) continue;
+      const text = node.innerText || node.textContent || "";
+      const compactText = normalizeSectionText(text);
+      if (!compactText || compactText.length > 40) continue;
+      if (!containsSectionKeyword(compactText, TRAILING_SECTION_KEYWORDS)) continue;
+
+      const rect = node.getBoundingClientRect();
+      const top = rect.top;
+      if (top <= window.innerHeight * 0.45) continue;
+
+      cutoffTop = cutoffTop === null ? top : Math.min(cutoffTop, top);
+    }
+
+    return cutoffTop;
+  }
+
   function matchesRegion(element, selector) {
     if (!selector) return false;
     try {
@@ -218,9 +305,15 @@
       );
 
       for (const element of elements) {
+        if (isInExcludedSection(element)) continue;
+
         const rawUrl = collectImageUrlFromElement(element);
         const url = rawUrl ? normalizeImageUrl(rawUrl) : null;
         if (!url || isIgnoredImageUrl(url)) continue;
+
+        const rect = element.getBoundingClientRect();
+        const top = rect.top;
+        if (options.cutoffTop != null && top >= options.cutoffTop) continue;
 
         const width = element.naturalWidth || element.width || undefined;
         const height = element.naturalHeight || element.height || undefined;
@@ -230,6 +323,7 @@
           url,
           width,
           height,
+          top,
           area: (width || 0) * (height || 0),
           skuName: options.extractSku ? readSkuName(element) : null
         };
@@ -242,16 +336,21 @@
     return dedupeCandidates(candidates).slice(0, limit);
   }
 
-  function collectAllCandidates(mainRegionSelector, skuRegionSelector, detailRegionSelector) {
+  function collectAllCandidates(mainRegionSelector, skuRegionSelector, detailRegionSelector, cutoffTop) {
     const candidates = [];
 
     for (const { doc, topOffset, fromIframe } of collectAccessibleDocuments()) {
       for (const element of Array.from(doc.images)) {
+        if (isInExcludedSection(element)) continue;
+
         const rawUrl = collectImageUrlFromElement(element);
         const url = rawUrl ? normalizeImageUrl(rawUrl) : null;
         if (!url || isIgnoredImageUrl(url)) continue;
 
         const rect = element.getBoundingClientRect();
+        const top = topOffset + rect.top;
+        if (cutoffTop != null && top >= cutoffTop) continue;
+
         const width = element.naturalWidth || Math.round(rect.width) || element.width || undefined;
         const height = element.naturalHeight || Math.round(rect.height) || element.height || undefined;
         if ((width || 0) < 60 && (height || 0) < 60) continue;
@@ -260,7 +359,7 @@
           url,
           width,
           height,
-          top: topOffset + rect.top,
+          top,
           area: (width || 0) * (height || 0),
           skuName: matchesRegion(element, skuRegionSelector) ? readSkuName(element) : null,
           inMainRegion: matchesRegion(element, mainRegionSelector),
@@ -410,14 +509,6 @@
         "[class*='mainPic'] img",
         "[class*='main-image'] img"
       ];
-      const skuSelectors = [
-        "[class*='sku'] img",
-        "[class*='Sku'] img",
-        "[class*='prop'] img",
-        "[class*='spec'] img",
-        "[data-sku] img",
-        ".J_TSaleProp img"
-      ];
       const detailPrimarySelectors = [
         "#description img",
         "#J_DivItemDesc img",
@@ -454,7 +545,13 @@
         ...detailFallbackSelectors.map(selector => selector.replace(/\s+img$/, ""))
       ]);
 
-      const allCandidates = collectAllCandidates(mainRegionSelector, skuRegionSelector, detailRegionSelector);
+      const recommendationCutoffTop = getRecommendationCutoffTop();
+      const allCandidates = collectAllCandidates(
+        mainRegionSelector,
+        skuRegionSelector,
+        detailRegionSelector,
+        recommendationCutoffTop
+      );
       const explicitMain = extractBySelectors(mainSelectors, 12);
       const fallbackMain = explicitMain.length
         ? dedupeCandidates([
@@ -472,49 +569,24 @@
             )
           ).slice(0, 12);
 
-      const skuCandidates = dedupeCandidates([
-        ...extractBySelectors(skuSelectors, 50, { extractSku: true }),
-        ...rankByVisualPriority(
-          allCandidates.filter(
-            candidate =>
-              candidate.inSkuRegion &&
-              (candidate.width || 0) >= 40 &&
-              (candidate.height || 0) >= 40
-          )
-        ).slice(0, 40)
-      ]).slice(0, 40);
-
       const detailCandidates = dedupeCandidates([
         ...extractBySelectors(detailPrimarySelectors, 60, {
           predicate: isLikelyDetailImage,
-          checkAllDocs: true
+          checkAllDocs: true,
+          cutoffTop: recommendationCutoffTop
         }),
         ...extractBySelectors(detailFallbackSelectors, 60, {
           predicate: isLikelyDetailImage,
-          checkAllDocs: true
+          checkAllDocs: true,
+          cutoffTop: recommendationCutoffTop
         }),
-        ...selectDetailCandidates(allCandidates, [...fallbackMain, ...skuCandidates])
+        ...selectDetailCandidates(allCandidates, [...fallbackMain])
       ]).slice(0, 30);
 
       const mainImages = fallbackMain.map(candidate => candidate.url);
-      const colorImages = skuCandidates.map(candidate => candidate.url);
       const detailImages = detailCandidates
         .map(candidate => candidate.url)
-        .filter(url => !mainImages.includes(url) && !colorImages.includes(url));
-
-      const seenSkus = new Set();
-      const skus = skuCandidates
-        .filter(candidate => candidate.skuName)
-        .map(candidate => ({
-          name: candidate.skuName,
-          image: candidate.url
-        }))
-        .filter(item => {
-          const key = `${item.name}|${buildDedupeKey(item.image)}`;
-          if (seenSkus.has(key)) return false;
-          seenSkus.add(key);
-          return true;
-        });
+        .filter(url => !mainImages.includes(url));
 
       const result = {
         title,
@@ -522,9 +594,9 @@
         shop_name: shopName,
         images: mainImages,
         video_url: getVideoUrl(),
-        color_images: colorImages,
+        color_images: [],
         detail_images: detailImages,
-        skus
+        skus: []
       };
 
       chrome.runtime.sendMessage(

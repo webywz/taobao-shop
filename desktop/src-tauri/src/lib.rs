@@ -250,7 +250,8 @@ async fn download_assets(input: DownloadAssetsInput) -> Result<DownloadAssetsOut
   };
 
   let color_count = if target == "all" || target == "color" {
-    download_group(&client, &input.color_images, &root_dir, "sku", "sku", "jpg").await?
+    let _ = &input.color_images;
+    0
   } else {
     0
   };
