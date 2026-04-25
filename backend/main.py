@@ -23,8 +23,6 @@ class CreateTaskRequest(BaseModel):
 
 class TaskResult(BaseModel):
     title: Optional[str] = None
-    price_text: Optional[str] = None
-    shop_name: Optional[str] = None
     images: list[str] = []
     video_url: Optional[str] = None
     color_images: list[str] = []

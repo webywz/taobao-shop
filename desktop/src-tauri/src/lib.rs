@@ -20,8 +20,6 @@ struct DownloadAssetsInput {
   task_id: String,
   source_url: Option<String>,
   title: Option<String>,
-  shop_name: Option<String>,
-  price_text: Option<String>,
   target: Option<String>,
   main_images: Vec<String>,
   color_images: Vec<String>,
@@ -209,17 +207,13 @@ async fn download_group(
   client: &reqwest::Client,
   urls: &[String],
   root_dir: &Path,
-  folder_name: &str,
+  _folder_name: &str,
   file_prefix: &str,
   default_ext: &str,
 ) -> Result<usize, String> {
   if urls.is_empty() {
     return Ok(0);
   }
-
-  let group_dir = root_dir.join(folder_name);
-  fs::create_dir_all(&group_dir)
-    .map_err(|e| format!("failed to create {}: {}", group_dir.display(), e))?;
 
   let mut saved_count = 0;
   let mut seen = HashSet::new();
@@ -240,7 +234,7 @@ async fn download_group(
     }
 
     let ext = infer_extension(url, probe.headers().get("content-type").and_then(|v| v.to_str().ok()), default_ext);
-    let file_path = group_dir.join(format!("{}_{:02}.{}", file_prefix, saved_count + 1, ext));
+    let file_path = root_dir.join(format!("{}_{:02}.{}", file_prefix, saved_count + 1, ext));
     let bytes = probe
       .bytes()
       .await
@@ -271,8 +265,6 @@ fn write_download_record(
     "task_id": input.task_id,
     "source_url": input.source_url,
     "title": input.title,
-    "shop_name": input.shop_name,
-    "price_text": input.price_text,
     "saved_dir": root_dir.display().to_string(),
     "saved_at": chrono::Utc::now().to_rfc3339(),
     "options": {
@@ -375,6 +367,40 @@ async fn download_assets(input: DownloadAssetsInput) -> Result<DownloadAssetsOut
   })
 }
 
+#[tauri::command]
+async fn open_path(path: String) -> Result<bool, String> {
+  let target = PathBuf::from(path);
+  if !target.exists() {
+    return Err(format!("path not found: {}", target.display()));
+  }
+
+  #[cfg(target_os = "macos")]
+  let mut command = {
+    let mut cmd = Command::new("open");
+    cmd.arg(&target);
+    cmd
+  };
+
+  #[cfg(target_os = "windows")]
+  let mut command = {
+    let mut cmd = Command::new("explorer");
+    cmd.arg(&target);
+    cmd
+  };
+
+  #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+  let mut command = {
+    let mut cmd = Command::new("xdg-open");
+    cmd.arg(&target);
+    cmd
+  };
+
+  command
+    .spawn()
+    .map_err(|e| format!("failed to open path: {}", e))?;
+  Ok(true)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -389,7 +415,7 @@ pub fn run() {
       }
       Ok(())
     })
-    .invoke_handler(tauri::generate_handler![ensure_backend, backend_request, download_assets])
+    .invoke_handler(tauri::generate_handler![ensure_backend, backend_request, download_assets, open_path])
     .build(tauri::generate_context!())
     .expect("error while building tauri application")
     .run(|app_handle, event| {

@@ -522,18 +522,6 @@
         ".ItemHeader--mainTitle--3CIjqW5",
         "h1"
       ]) || document.title;
-      const priceText = getText([
-        ".priceText",
-        ".tb-rmb-num",
-        ".Price--priceText--2nLbVda",
-        '[class*="price"]'
-      ]);
-      const shopName = getText([
-        ".shopName",
-        ".shop-name-title",
-        ".ShopHeader--title--1z66K_f",
-        '[class*="shop-name"]'
-      ]);
 
       const mainSelectors = [
         "#J_UlThumb img",
@@ -673,8 +661,6 @@
 
       const result = {
         title,
-        price_text: priceText,
-        shop_name: shopName,
         images: mainImages,
         video_url: getVideoUrl(),
         color_images: colorImages,

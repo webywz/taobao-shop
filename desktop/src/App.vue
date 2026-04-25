@@ -11,8 +11,6 @@ type SkuItem = {
 
 type TaskResult = {
   title?: string;
-  price_text?: string;
-  shop_name?: string;
   images?: string[];
   video_url?: string | null;
   color_images?: string[];
@@ -85,6 +83,7 @@ const downloadTarget = ref<DownloadTarget | null>(null);
 const downloadMessage = ref("");
 const downloadError = ref("");
 const recordMessage = ref("");
+const lastSavedDir = ref("");
 const downloadOptions = reactive(loadDownloadOptions());
 let pollTimer: number | undefined;
 let listTimer: number | undefined;
@@ -290,6 +289,7 @@ async function handleDownload(target: DownloadTarget) {
   downloadMessage.value = "";
   downloadError.value = "";
   recordMessage.value = "";
+  lastSavedDir.value = "";
 
   try {
     const result = await invoke<DownloadAssetsResult>("download_assets", {
@@ -297,8 +297,6 @@ async function handleDownload(target: DownloadTarget) {
         task_id: selectedTask.value.id,
         source_url: selectedTask.value.url,
         title: selectedTask.value.result.title ?? null,
-        shop_name: selectedTask.value.result.shop_name ?? null,
-        price_text: selectedTask.value.result.price_text ?? null,
         target,
         main_images: selectedTask.value.result.images ?? [],
         color_images: selectedTask.value.result.color_images ?? [],
@@ -314,6 +312,7 @@ async function handleDownload(target: DownloadTarget) {
     });
 
     downloadMessage.value = `已保存 ${getDownloadCount(result, target)} 个文件到 ${result.saved_dir}`;
+    lastSavedDir.value = result.saved_dir;
     if (result.record_path) {
       recordMessage.value = `记录文件已生成：${result.record_path}`;
     }
@@ -321,6 +320,15 @@ async function handleDownload(target: DownloadTarget) {
     downloadError.value = error instanceof Error ? error.message : "下载失败";
   } finally {
     downloadTarget.value = null;
+  }
+}
+
+async function openSavedDir() {
+  if (!lastSavedDir.value) return;
+  try {
+    await invoke("open_path", { path: lastSavedDir.value });
+  } catch (error) {
+    downloadError.value = error instanceof Error ? error.message : "打开目录失败";
   }
 }
 
@@ -352,14 +360,12 @@ function exportTaskRecords() {
     return;
   }
 
-  const header = ["任务ID", "链接", "标题", "状态", "店铺", "价格", "主图数", "颜色图数", "详情图数", "视频", "更新时间"];
+  const header = ["任务ID", "链接", "标题", "状态", "主图数", "颜色图数", "详情图数", "视频", "更新时间"];
   const rows = tasks.value.map(task => [
     task.id,
     task.url,
     task.result?.title ?? "",
     statusLabel(task.status),
-    task.result?.shop_name ?? "",
-    task.result?.price_text ?? "",
     task.result?.images?.length ?? 0,
     task.result?.color_images?.length ?? 0,
     task.result?.detail_images?.length ?? 0,
@@ -448,14 +454,6 @@ onUnmounted(() => {
           <div class="result-card">
             <div class="result-title">{{ selectedTask.result.title ?? "—" }}</div>
             <div class="result-row">
-              <span class="result-label">价格</span>
-              <span class="result-value price">{{ selectedTask.result.price_text ?? "—" }}</span>
-            </div>
-            <div class="result-row">
-              <span class="result-label">店铺</span>
-              <span class="result-value">{{ selectedTask.result.shop_name ?? "—" }}</span>
-            </div>
-            <div class="result-row">
               <span class="result-label">主图</span>
               <span class="result-value">{{ selectedTask.result.images?.length || 0 }} 张</span>
             </div>
@@ -532,7 +530,10 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <div v-if="downloadMessage" class="success-box">{{ downloadMessage }}</div>
+          <div v-if="downloadMessage" class="success-box success-row">
+            <span>{{ downloadMessage }}</span>
+            <button v-if="lastSavedDir" class="btn-secondary" @click="openSavedDir">打开保存目录</button>
+          </div>
           <div v-if="recordMessage" class="hint-box">{{ recordMessage }}</div>
           <div v-if="downloadError" class="error-box">{{ downloadError }}</div>
 
