@@ -138,6 +138,55 @@ def enhance_result_from_page_data(result: TaskResult):
         # Just extracting images for color_images
         result.color_images = list(dict.fromkeys([sku['image'] for sku in result.skus if sku.get('image')]))
 
+    # Extract detail images from HTML contents and network responses in page_data
+    network_responses = page_data.get('__tbtNetworkResponses', [])
+    detail_images_list = []
+    
+    html_contents = _find_values(page_data, [r'^pcDescContent$', r'^mobileDescContent$', r'^wdescContent$', r'^descContent$', r'^descriptionHtml$', r'^singleHtml$'])
+    
+    if isinstance(network_responses, list):
+        for resp in network_responses:
+            if isinstance(resp, dict) and resp.get('likelyDetail'):
+                html_contents.append(resp.get('body', ''))
+
+    def extract_images_from_html(html_str):
+        if not isinstance(html_str, str):
+            return []
+        # Support src="", data-src="", and raw urls
+        urls = re.findall(r'(?:src|data-ks-lazyload|data-lazyload|data-src|data-lazy-src)=["\']([^"\']+\.(?:jpg|jpeg|png|webp|gif|bmp|avif)[^"\']*)["\']', html_str, re.IGNORECASE)
+        urls2 = re.findall(r'(?:https?:)?\/\/[^"\'\\<>\s]+?\.(?:jpg|jpeg|png|webp|gif|bmp|avif)', html_str, re.IGNORECASE)
+        
+        valid = []
+        for u in urls + urls2:
+            if 'sprite' in u or 'icon' in u or 'logo' in u or '.gif' in u:
+                continue
+            if u.startswith('//'):
+                u = f"https:{u}"
+            elif not u.startswith('http'):
+                continue
+            # Remove url parameters if needed, but let's keep it simple
+            valid.append(u)
+        return valid
+
+    for html in html_contents:
+        if isinstance(html, str):
+            detail_images_list.extend(extract_images_from_html(html))
+        elif isinstance(html, dict):
+            pages = html.get('pages', [])
+            if isinstance(pages, list):
+                for p in pages:
+                    detail_images_list.extend(extract_images_from_html(p))
+
+    if detail_images_list:
+        unique_detail_images = list(dict.fromkeys(detail_images_list))
+        main_and_color = set(result.images + result.color_images)
+        final_details = [u for u in unique_detail_images if u not in main_and_color]
+        
+        # If the newly extracted detail images are more than what we have, update it.
+        # Especially when JS only returned 3 images.
+        if len(final_details) > len(result.detail_images) or len(result.detail_images) <= 3:
+            if final_details:
+                result.detail_images = final_details
 
 
 @app.post("/tasks")
@@ -202,3 +251,7 @@ def delete_task(task_id: str):
         raise HTTPException(status_code=404, detail="task not found")
     del tasks[task_id]
     return {"ok": True}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=4318)
