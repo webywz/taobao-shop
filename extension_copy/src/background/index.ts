@@ -302,21 +302,21 @@ async function runPageExtraction(task: QueuedTask) {
     }
 
     await waitForTabComplete(tab.id)
-    await sleep(2500)
+    await sleep(1200)
 
     let lastPayload: ExtractedTaskPayload | null = null
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       lastPayload = await extractFromTab(tab.id)
 
       const detailCount = lastPayload.images.detail.length
       const mainCount = lastPayload.images.main.length
 
-      if (detailCount > 0 || attempt === 2 || mainCount === 0) {
+      if (detailCount > 0 || attempt === 1 || mainCount === 0) {
         return lastPayload
       }
 
-      await sleep(2500)
+      await sleep(1200)
     }
 
     if (!lastPayload) {

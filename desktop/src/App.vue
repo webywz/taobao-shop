@@ -44,8 +44,6 @@ type DownloadOptions = {
   includeColor: boolean;
   includeDetail: boolean;
   includeVideo: boolean;
-  writeRecord: boolean;
-  dedupeColor: boolean;
   enableTaobao: boolean;
   enableTmall: boolean;
 };
@@ -58,8 +56,6 @@ function loadDownloadOptions(): DownloadOptions {
     includeColor: true,
     includeDetail: true,
     includeVideo: true,
-    writeRecord: true,
-    dedupeColor: true,
     enableTaobao: true,
     enableTmall: true,
   };
@@ -84,6 +80,9 @@ const downloadMessage = ref("");
 const downloadError = ref("");
 const recordMessage = ref("");
 const lastSavedDir = ref("");
+const previewImages = ref<string[]>([]);
+const previewIndex = ref(0);
+const previewLabel = ref("");
 const downloadOptions = reactive(loadDownloadOptions());
 let pollTimer: number | undefined;
 let listTimer: number | undefined;
@@ -98,13 +97,14 @@ watch(
 
 const runningCount = computed(() => tasks.value.filter(t => t.status === "running" || t.status === "pending").length);
 const selectedResult = computed(() => selectedTask.value?.result ?? null);
+const hasPreview = computed(() => previewImages.value.length > 0);
+const previewImageUrl = computed(() => previewImages.value[previewIndex.value] ?? "");
 const selectedDownloadCount = computed(() => {
   return [
     downloadOptions.includeMain,
     downloadOptions.includeColor,
     downloadOptions.includeDetail,
-    downloadOptions.includeVideo,
-    downloadOptions.writeRecord
+    downloadOptions.includeVideo
   ].filter(Boolean).length;
 });
 
@@ -236,8 +236,7 @@ function hasMedia(target: DownloadTarget) {
       (downloadOptions.includeMain && Boolean(result.images?.length)) ||
       (downloadOptions.includeColor && Boolean(result.color_images?.length)) ||
       (downloadOptions.includeDetail && Boolean(result.detail_images?.length)) ||
-      (downloadOptions.includeVideo && Boolean(result.video_url)) ||
-      downloadOptions.writeRecord,
+      (downloadOptions.includeVideo && Boolean(result.video_url)),
     all:
       Boolean(result.images?.length) ||
       Boolean(result.color_images?.length) ||
@@ -260,9 +259,7 @@ function getDownloadFlags(target: DownloadTarget) {
       includeMain: downloadOptions.includeMain,
       includeColor: downloadOptions.includeColor,
       includeDetail: downloadOptions.includeDetail,
-      includeVideo: downloadOptions.includeVideo,
-      writeRecord: downloadOptions.writeRecord,
-      dedupeColor: downloadOptions.dedupeColor
+      includeVideo: downloadOptions.includeVideo
     };
   }
 
@@ -270,9 +267,7 @@ function getDownloadFlags(target: DownloadTarget) {
     includeMain: target === "all" || target === "main",
     includeColor: target === "all" || target === "color",
     includeDetail: target === "all" || target === "detail",
-    includeVideo: target === "all" || target === "video",
-    writeRecord: downloadOptions.writeRecord,
-    dedupeColor: downloadOptions.dedupeColor
+    includeVideo: target === "all" || target === "video"
   };
 }
 
@@ -280,8 +275,8 @@ async function handleDownload(target: DownloadTarget) {
   if (!selectedTask.value?.result) return;
 
   const flags = getDownloadFlags(target);
-  if (!flags.includeMain && !flags.includeColor && !flags.includeDetail && !flags.includeVideo && !flags.writeRecord) {
-    downloadError.value = "请至少勾选一个下载项或记录";
+  if (!flags.includeMain && !flags.includeColor && !flags.includeDetail && !flags.includeVideo) {
+    downloadError.value = "请至少勾选一个下载项";
     return;
   }
 
@@ -306,8 +301,8 @@ async function handleDownload(target: DownloadTarget) {
         include_color: flags.includeColor,
         include_detail: flags.includeDetail,
         include_video: flags.includeVideo,
-        dedupe_color: flags.dedupeColor,
-        write_record: flags.writeRecord
+        dedupe_color: false,
+        write_record: false
       }
     });
 
@@ -334,6 +329,64 @@ async function openSavedDir() {
 
 function formatDate(timestamp: number) {
   return new Date(timestamp * 1000).toLocaleString("zh-CN", { hour12: false });
+}
+
+function mediaFilename(url: string, index: number) {
+  try {
+    const pathname = new URL(url).pathname;
+    const filename = pathname.split("/").pop();
+    return filename || `图片 ${index + 1}`;
+  } catch {
+    return `图片 ${index + 1}`;
+  }
+}
+
+function mediaHost(url: string) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "未知来源";
+  }
+}
+
+function openPreview(images: string[], index: number, label: string) {
+  if (!images.length) return;
+  previewImages.value = images;
+  previewIndex.value = Math.min(Math.max(index, 0), images.length - 1);
+  previewLabel.value = label;
+}
+
+function closePreview() {
+  previewImages.value = [];
+  previewIndex.value = 0;
+  previewLabel.value = "";
+}
+
+function stepPreview(direction: 1 | -1) {
+  if (!previewImages.value.length) return;
+  previewIndex.value =
+    (previewIndex.value + direction + previewImages.value.length) % previewImages.value.length;
+}
+
+function previewSkuImage(image?: string) {
+  if (!image || !selectedTask.value?.result?.skus?.length) return;
+  const skuImages = selectedTask.value.result.skus
+    .map(item => item.image)
+    .filter((item): item is string => Boolean(item));
+  const index = Math.max(skuImages.findIndex(item => item === image), 0);
+  openPreview(skuImages, index, "SKU 图");
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (!hasPreview.value) return;
+
+  if (event.key === "Escape") {
+    closePreview();
+  } else if (event.key === "ArrowLeft") {
+    stepPreview(-1);
+  } else if (event.key === "ArrowRight") {
+    stepPreview(1);
+  }
 }
 
 function escapeCsv(value: unknown) {
@@ -382,11 +435,13 @@ onMounted(async () => {
   await checkHealth();
   await fetchTasks();
   listTimer = window.setInterval(fetchTasks, 3000);
+  window.addEventListener("keydown", handleKeydown);
 });
 
 onUnmounted(() => {
   clearInterval(pollTimer);
   clearInterval(listTimer);
+  window.removeEventListener("keydown", handleKeydown);
 });
 </script>
 
@@ -488,14 +543,6 @@ onUnmounted(() => {
                   <input v-model="downloadOptions.includeVideo" type="checkbox" />
                   <span>主图视频</span>
                 </label>
-                <label class="option-item">
-                  <input v-model="downloadOptions.writeRecord" type="checkbox" />
-                  <span>记录</span>
-                </label>
-                <label class="option-item">
-                  <input v-model="downloadOptions.dedupeColor" type="checkbox" />
-                  <span>过滤重复颜色</span>
-                </label>
               </div>
             </div>
             <div class="action-row">
@@ -535,17 +582,23 @@ onUnmounted(() => {
               </div>
               <a class="link-btn" :href="selectedTask.result.images[0]" target="_blank" rel="noreferrer">打开首张</a>
             </div>
-            <div class="images-grid">
-              <a
+            <div class="media-list">
+              <div
                 v-for="(img, i) in selectedTask.result.images"
                 :key="`main-${i}`"
-                :href="img"
-                target="_blank"
-                rel="noreferrer"
-                class="media-link"
+                class="media-item"
+                @click="openPreview(selectedTask.result.images ?? [], i, '主图')"
               >
-                <img :src="img" class="thumb" />
-              </a>
+                <div class="thumb-frame">
+                  <img :src="img" class="thumb media-list-thumb" />
+                </div>
+                <div class="media-item-body">
+                  <div class="media-item-index">主图 {{ i + 1 }}</div>
+                  <div class="media-item-name">{{ mediaFilename(img, i) }}</div>
+                  <div class="media-item-meta">{{ mediaHost(img) }}</div>
+                  <a class="media-item-link" :href="img" target="_blank" rel="noreferrer" @click.stop>原图</a>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -556,17 +609,23 @@ onUnmounted(() => {
                 <div class="media-meta">{{ selectedTask.result.color_images.length }} 张</div>
               </div>
             </div>
-            <div class="images-grid">
-              <a
+            <div class="media-list">
+              <div
                 v-for="(img, i) in selectedTask.result.color_images"
                 :key="`color-${i}`"
-                :href="img"
-                target="_blank"
-                rel="noreferrer"
-                class="media-link"
+                class="media-item"
+                @click="openPreview(selectedTask.result.color_images ?? [], i, '颜色图')"
               >
-                <img :src="img" class="thumb" />
-              </a>
+                <div class="thumb-frame">
+                  <img :src="img" class="thumb media-list-thumb" />
+                </div>
+                <div class="media-item-body">
+                  <div class="media-item-index">颜色图 {{ i + 1 }}</div>
+                  <div class="media-item-name">{{ mediaFilename(img, i) }}</div>
+                  <div class="media-item-meta">{{ mediaHost(img) }}</div>
+                  <a class="media-item-link" :href="img" target="_blank" rel="noreferrer" @click.stop>原图</a>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -578,7 +637,13 @@ onUnmounted(() => {
               </div>
             </div>
             <div class="sku-grid">
-              <div v-for="(sku, i) in selectedTask.result.skus" :key="`sku-${i}`" class="sku-card">
+              <div
+                v-for="(sku, i) in selectedTask.result.skus"
+                :key="`sku-${i}`"
+                class="sku-card"
+                :class="{ 'sku-card-clickable': !!sku.image }"
+                @click="previewSkuImage(sku.image)"
+              >
                 <img v-if="sku.image" :src="sku.image" class="sku-thumb" />
                 <div class="sku-name">{{ sku.name }}</div>
               </div>
@@ -592,17 +657,23 @@ onUnmounted(() => {
                 <div class="media-meta">{{ selectedTask.result.detail_images.length }} 张</div>
               </div>
             </div>
-            <div class="images-grid detail-grid">
-              <a
+            <div class="media-list">
+              <div
                 v-for="(img, i) in selectedTask.result.detail_images"
                 :key="`detail-${i}`"
-                :href="img"
-                target="_blank"
-                rel="noreferrer"
-                class="media-link"
+                class="media-item"
+                @click="openPreview(selectedTask.result.detail_images ?? [], i, '详情图')"
               >
-                <img :src="img" class="thumb detail-thumb" />
-              </a>
+                <div class="thumb-frame detail-thumb-frame">
+                  <img :src="img" class="thumb media-list-thumb detail-list-thumb" />
+                </div>
+                <div class="media-item-body">
+                  <div class="media-item-index">详情图 {{ i + 1 }}</div>
+                  <div class="media-item-name">{{ mediaFilename(img, i) }}</div>
+                  <div class="media-item-meta">{{ mediaHost(img) }}</div>
+                  <a class="media-item-link" :href="img" target="_blank" rel="noreferrer" @click.stop>原图</a>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -632,5 +703,40 @@ onUnmounted(() => {
         <div>选择左侧任务查看详情，或输入链接开始采集</div>
       </div>
     </main>
+
+    <div v-if="hasPreview" class="preview-overlay" @click="closePreview">
+      <div class="preview-shell" @click.stop>
+        <div class="preview-toolbar">
+          <div class="preview-caption">
+            <div class="preview-title">{{ previewLabel }}</div>
+            <div class="preview-meta">{{ previewIndex + 1 }} / {{ previewImages.length }}</div>
+          </div>
+          <div class="preview-actions">
+            <a class="btn-secondary" :href="previewImageUrl" target="_blank" rel="noreferrer">打开原图</a>
+            <button type="button" class="preview-close" @click="closePreview">×</button>
+          </div>
+        </div>
+
+        <div class="preview-stage">
+          <button
+            v-if="previewImages.length > 1"
+            type="button"
+            class="preview-nav preview-prev"
+            @click="stepPreview(-1)"
+          >
+            ‹
+          </button>
+          <img :src="previewImageUrl" class="preview-image" />
+          <button
+            v-if="previewImages.length > 1"
+            type="button"
+            class="preview-nav preview-next"
+            @click="stepPreview(1)"
+          >
+            ›
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
