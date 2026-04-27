@@ -4,6 +4,8 @@ from pydantic import BaseModel
 from typing import Optional
 import uuid
 import time
+import time
+import re
 
 app = FastAPI()
 
@@ -41,6 +43,101 @@ class SubmitResultRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+def _find_values(obj, keys, max_depth=8, current_depth=0, seen=None):
+    if seen is None:
+        seen = set()
+    
+    obj_id = id(obj)
+    if obj_id in seen or current_depth > max_depth:
+        return []
+    
+    seen.add(obj_id)
+    results = []
+
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if any(re.search(key_pattern, k, re.IGNORECASE) for key_pattern in keys):
+                if v:
+                    results.append(v)
+            results.extend(_find_values(v, keys, max_depth, current_depth + 1, seen))
+    elif isinstance(obj, list):
+        for item in obj:
+            results.extend(_find_values(item, keys, max_depth, current_depth + 1, seen))
+            
+    return results
+
+def enhance_result_from_page_data(result: TaskResult):
+    if not result.raw or not isinstance(result.raw, dict):
+        return
+    
+    page_data = result.raw.get("page_data")
+    if not page_data or not isinstance(page_data, dict):
+        return
+
+    # Extract title
+    if not result.title or result.title == "undefined":
+        titles = _find_values(page_data, [r'^title$', r'^itemTitle$'])
+        for t in titles:
+            if isinstance(t, str) and len(t) > 5:
+                result.title = t
+                break
+
+    # Extract main images
+    if not result.images or len(result.images) == 0:
+        images_lists = _find_values(page_data, [r'^images$', r'^auctionImages$', r'^picUrls$', r'^picList$'])
+        for lst in images_lists:
+            if isinstance(lst, list) and len(lst) > 0 and isinstance(lst[0], str):
+                valid_images = [img if img.startswith('http') else f"https:{img}" for img in lst if isinstance(img, str) and not img.endswith('.gif')]
+                if valid_images:
+                    result.images = valid_images
+                    break
+
+    # Extract video url
+    if not result.video_url:
+        videos = _find_values(page_data, [r'^videoUrl$', r'^video$'])
+        for v in videos:
+            if isinstance(v, str) and ('.mp4' in v or '.m3u8' in v):
+                result.video_url = v if v.startswith('http') else f"https:{v}"
+                break
+            elif isinstance(v, dict) and isinstance(v.get('url'), str) and '.mp4' in v.get('url'):
+                url = v.get('url')
+                result.video_url = url if url.startswith('http') else f"https:{url}"
+                break
+
+    # Extract skus
+    if not result.skus or len(result.skus) == 0:
+        # Looking for props and propertyPics
+        props_list = _find_values(page_data, [r'^props$', r'^skuProps$'])
+        property_pics_list = _find_values(page_data, [r'^propertyPics$', r'^sku2info$'])
+        
+        # A simple fallback sku extraction based on property pics if detailed extraction fails
+        for pics in property_pics_list:
+            if isinstance(pics, dict):
+                for k, v in pics.items():
+                    pic_url = None
+                    if isinstance(v, str):
+                        pic_url = v
+                    elif isinstance(v, list) and len(v) > 0 and isinstance(v[0], str):
+                        pic_url = v[0]
+                    elif isinstance(v, dict) and isinstance(v.get('picUrl', v.get('pic')), str):
+                        pic_url = v.get('picUrl', v.get('pic'))
+                        
+                    if pic_url:
+                        pic_url = pic_url if pic_url.startswith('http') else f"https:{pic_url}"
+                        # Try to find a matching name in props, or just use the ID
+                        result.skus.append({"name": f"SKU {k}", "image": pic_url})
+                if result.skus:
+                    break
+
+    # Remove duplicates from images
+    if result.images:
+        result.images = list(dict.fromkeys(result.images))
+    if result.skus:
+        # Just extracting images for color_images
+        result.color_images = list(dict.fromkeys([sku['image'] for sku in result.skus if sku.get('image')]))
+
 
 
 @app.post("/tasks")
@@ -89,6 +186,9 @@ def submit_result(task_id: str, req: SubmitResultRequest):
     task = tasks.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="task not found")
+        
+    enhance_result_from_page_data(req.result)
+    
     task["status"] = req.status
     task["result"] = req.result.model_dump()
     task["error_message"] = req.error_message

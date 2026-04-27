@@ -223,6 +223,7 @@
   function readKnownGlobals() {
     const sources = [
       () => window.runParams && (window.runParams.data || window.runParams),
+      () => window.__ICE_APP_CONTEXT__,
       () => window.__INIT_DATA__,
       () => window.__GLOBAL_DATA__,
       () => window.g_config && (window.g_config.data || window.g_config),
@@ -257,7 +258,7 @@
       if (!text || text.length > 4_000_000) continue;
 
       const assignmentMatch = text.match(
-        /(?:window\.)?(?:__INIT_DATA__|__GLOBAL_DATA__)\s*=\s*({[\s\S]+?})\s*;?\s*$/
+        /(?:window\.)?(?:__INIT_DATA__|__GLOBAL_DATA__|__ICE_APP_CONTEXT__)\s*=\s*({[\s\S]+?})\s*;?\s*$/
       );
       if (assignmentMatch) {
         const parsed = tryParseJson(assignmentMatch[1]);

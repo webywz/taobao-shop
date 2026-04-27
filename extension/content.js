@@ -2036,6 +2036,7 @@
       raw: {
         source: "structured",
         desc_url: meta.descUrl || null,
+        page_data: productData,
         page_data_sources: productData?.__tbtSources || productData?.__tbtSource || null,
         network_response_count: Array.isArray(productData?.__tbtNetworkResponses) ? productData.__tbtNetworkResponses.length : 0,
         network_parsed_urls: productData?.__tbtNetworkParsedUrls || [],
