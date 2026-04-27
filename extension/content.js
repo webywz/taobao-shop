@@ -201,9 +201,24 @@
       if (directUrl) urls.add(directUrl);
     }
 
+    if (element instanceof HTMLVideoElement) {
+      const poster = element.getAttribute("poster") || element.poster;
+      if (poster) urls.add(poster);
+    }
+
     for (const attribute of IMAGE_DATA_ATTRIBUTES) {
       const value = element.getAttribute(attribute);
       if (value) urls.add(value);
+    }
+
+    if (element instanceof HTMLElement) {
+      try {
+        for (const url of extractUrlsFromCssValue(window.getComputedStyle(element).backgroundImage)) {
+          urls.add(url);
+        }
+      } catch {
+        // Ignore detached or cross-document nodes.
+      }
     }
 
     return Array.from(urls);
@@ -1333,6 +1348,83 @@
     return values;
   }
 
+  function mergeMissingObject(target, source) {
+    if (!target || !source || typeof target !== "object" || typeof source !== "object") return target;
+
+    for (const [key, value] of Object.entries(source)) {
+      if (target[key] == null) {
+        target[key] = value;
+      } else if (
+        value &&
+        target[key] &&
+        typeof value === "object" &&
+        typeof target[key] === "object" &&
+        !Array.isArray(value) &&
+        !Array.isArray(target[key])
+      ) {
+        mergeMissingObject(target[key], value);
+      }
+    }
+
+    return target;
+  }
+
+  function tryParseJsonText(text) {
+    if (typeof text !== "string") return null;
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+
+    const jsonp = trimmed.match(/^[\w$.]+\(([\s\S]*)\)\s*;?\s*$/);
+    const body = jsonp ? jsonp[1] : trimmed;
+    if (!body.startsWith("{") && !body.startsWith("[")) return null;
+
+    try {
+      return JSON.parse(body);
+    } catch {
+      return null;
+    }
+  }
+
+  function mergeApiStackPayload(target, source) {
+    const stack = Array.isArray(source?.apiStack)
+      ? source.apiStack
+      : Array.isArray(source?.data?.apiStack)
+        ? source.data.apiStack
+        : [];
+
+    for (const entry of stack) {
+      const payload = typeof entry?.value === "string"
+        ? tryParseJsonText(entry.value)
+        : entry?.value;
+      if (!payload || typeof payload !== "object") continue;
+      mergeMissingObject(target, payload);
+      if (payload.data && typeof payload.data === "object") {
+        mergeMissingObject(target, payload.data);
+      }
+    }
+  }
+
+  function mergeCapturedNetworkData(data) {
+    const base = data && typeof data === "object" ? { ...data } : {};
+    const responses = Array.isArray(base.__tbtNetworkResponses) ? base.__tbtNetworkResponses : [];
+    const parsedUrls = [];
+
+    for (const response of responses) {
+      const parsed = tryParseJsonText(response?.body);
+      if (!parsed || typeof parsed !== "object") continue;
+      mergeMissingObject(base, parsed);
+      if (parsed.data && typeof parsed.data === "object") {
+        mergeMissingObject(base, parsed.data);
+      }
+      mergeApiStackPayload(base, parsed);
+      parsedUrls.push(response.url);
+    }
+
+    mergeApiStackPayload(base, base);
+    base.__tbtNetworkParsedUrls = parsedUrls.slice(0, 20);
+    return base;
+  }
+
   function extractStructuredTitle(data) {
     return pickFirstString(
       safeGet(data, ["item", "title"]),
@@ -1417,6 +1509,27 @@
     }
     walk(data, 0);
     return found ? asAbsoluteImageUrl(found) : null;
+  }
+
+  function extractStructuredVideoCoverImages(data) {
+    const values = collectValuesByKey(
+      data,
+      /(?:video.*(?:cover|poster|pic|image|img|thumb)|(?:cover|poster).*(?:video)?|videoThumbnail|videoPic|videoImg)$/i,
+      8
+    );
+    const urls = [];
+
+    for (const value of values) {
+      if (Array.isArray(value)) {
+        urls.push(...normalizeStructuredImageList(value));
+        continue;
+      }
+
+      const url = asAbsoluteImageUrl(readStructuredImageValue(value));
+      if (url && !isIgnoredImageUrl(url)) urls.push(url);
+    }
+
+    return dedupeUrlList(urls);
   }
 
   function extractStructuredSkus(data) {
@@ -1730,30 +1843,209 @@
     return dedupeUrlList(htmlParts.flatMap(parseDetailImagesFromHtml));
   }
 
+  function extractNetworkDetailImages(data) {
+    const responses = Array.isArray(data?.__tbtNetworkResponses) ? data.__tbtNetworkResponses : [];
+    const urls = [];
+
+    for (const response of responses) {
+      const responseUrl = String(response?.url || "");
+      const body = String(response?.body || "");
+      const likelyDetail =
+        response?.likelyDetail ||
+        /desc|imageTextInfo|itemDesc|pcdetail/i.test(responseUrl) ||
+        /pcDescContent|mobileDescContent|wdescContent|descContent|图文详情|商品详情/i.test(body);
+
+      if (!likelyDetail) continue;
+
+      if (Array.isArray(response.imageUrls)) {
+        urls.push(...response.imageUrls);
+      }
+
+      if (body) {
+        urls.push(...parseDetailImagesFromHtml(body));
+      }
+    }
+
+    return dedupeUrlList(
+      urls
+        .map(asAbsoluteImageUrl)
+        .filter(Boolean)
+        .filter(url => !isIgnoredImageUrl(url))
+        .filter(url => !isLikelyTooSmallDetailImageUrl(url))
+    );
+  }
+
+  function excludeImageGroups(urls, excludedUrls) {
+    const excluded = new Set(excludedUrls.map(buildDedupeKey));
+    return dedupeUrlList(urls).filter(url => !excluded.has(buildDedupeKey(url)));
+  }
+
+  const STRICT_DETAIL_ROOT_SELECTORS = [
+    "#description",
+    "#J_DivItemDesc",
+    "#J_DivItemDescV2",
+    "#imageTextInfo-content",
+    "#imageTextInfo-container",
+    ".desc-root",
+    ".descV8-container",
+    "[class*='descV8']",
+    "[class*='Desc']",
+    "[class*='desc']",
+    "[class*='detail-content']",
+    "[class*='detailContent']",
+    "[class*='DetailContent']",
+    "[data-spm*='detail']",
+    "[data-spm*='desc']"
+  ];
+
+  const STRICT_DETAIL_EXCLUDED_SELECTOR = [
+    "[class*='recommend']",
+    "[id*='recommend']",
+    "[class*='guess']",
+    "[id*='guess']",
+    "[class*='similar']",
+    "[id*='similar']",
+    "[class*='related']",
+    "[id*='related']",
+    "[class*='review']",
+    "[id*='review']",
+    "[class*='rate']",
+    "[id*='rate']",
+    "[class*='comment']",
+    "[id*='comment']",
+    "[class*='buyer']",
+    "[id*='buyer']",
+    "[class*='ask']",
+    "[id*='ask']"
+  ].join(", ");
+
+  const STRICT_DETAIL_EXCLUDED_KEYWORDS = [
+    "买家秀",
+    "评价",
+    "累计评价",
+    "问大家",
+    "猜你喜欢",
+    "看了又看",
+    "本店推荐",
+    "店铺推荐",
+    "关联推荐",
+    "推荐商品",
+    "相似推荐"
+  ];
+
+  function isInStrictDetailExcludedSection(element) {
+    if (element.closest(STRICT_DETAIL_EXCLUDED_SELECTOR)) return true;
+
+    let current = element;
+    for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
+      const marker = [
+        current.id,
+        typeof current.className === "string" ? current.className : "",
+        current.getAttribute("aria-label") || "",
+        current.getAttribute("title") || "",
+        current.getAttribute("data-spm") || ""
+      ].join(" ");
+      if (containsSectionKeyword(marker, STRICT_DETAIL_EXCLUDED_KEYWORDS)) return true;
+    }
+
+    return false;
+  }
+
+  function scoreStrictDetailRoot(root, selectorIndex) {
+    const imageCount = root.querySelectorAll("img, video[poster], [data-src], [data-ks-lazyload], [style*='background']").length;
+    const text = normalizeTextContent(root.innerText || root.textContent || "");
+    const marker = [
+      root.id,
+      typeof root.className === "string" ? root.className : "",
+      root.getAttribute("data-spm") || ""
+    ].join(" ");
+    const detailBoost = /desc|detail|imageTextInfo/i.test(marker) ? 10000 : 0;
+    return detailBoost + Math.max(0, STRICT_DETAIL_ROOT_SELECTORS.length - selectorIndex) * 1000 + imageCount * 50 + Math.min(text.length, 1000);
+  }
+
+  function collectStrictDetailDomImages(limit = 180) {
+    const cutoffTop = getRecommendationCutoffTop();
+    const candidates = [];
+    const mediaSelector = [
+      "img",
+      "video[poster]",
+      "[data-src]",
+      "[data-lazy-src]",
+      "[data-ks-lazyload]",
+      "[data-bg]",
+      "[data-background]",
+      "[data-background-image]",
+      "[data-origin-src]",
+      "[style*='background-image']"
+    ].join(", ");
+
+    for (const { doc, topOffset } of collectAccessibleDocuments()) {
+      const roots = [];
+      STRICT_DETAIL_ROOT_SELECTORS.forEach((selector, selectorIndex) => {
+        for (const node of Array.from(doc.querySelectorAll(selector))) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (isInStrictDetailExcludedSection(node)) continue;
+          roots.push({ node, selectorIndex, score: scoreStrictDetailRoot(node, selectorIndex) });
+        }
+      });
+
+      roots
+        .sort((left, right) => right.score - left.score)
+        .slice(0, 3)
+        .forEach(({ node }) => {
+          const elements = new Set();
+          if (node.matches(mediaSelector)) elements.add(node);
+          for (const child of Array.from(node.querySelectorAll(mediaSelector))) {
+            if (child instanceof HTMLElement) elements.add(child);
+          }
+
+          for (const element of elements) {
+            if (isInStrictDetailExcludedSection(element)) continue;
+            for (const candidate of createCandidatesFromElement(element, topOffset, {
+              cutoffTop,
+              minShortestEdge: 40,
+              minArea: 2000
+            })) {
+              candidates.push(candidate);
+            }
+          }
+        });
+    }
+
+    return dedupeCandidates(candidates)
+      .sort((left, right) => (left.top || 0) - (right.top || 0))
+      .slice(0, limit)
+      .map(candidate => candidate.url);
+  }
+
   function buildResultFromStructured(productData, detailImages, meta = {}) {
     const title = extractStructuredTitle(productData);
     const mainImages = extractStructuredMainImages(productData);
     const skus = extractStructuredSkus(productData);
     const videoUrl = extractStructuredVideoUrl(productData);
     const colorImages = dedupeUrlList(skus.map(item => item.image).filter(Boolean));
+    const finalDetailImages = excludeImageGroups(detailImages, [...mainImages, ...colorImages]);
 
     return {
       title: title || document.title,
       images: mainImages,
       video_url: videoUrl,
       color_images: colorImages,
-      detail_images: dedupeUrlList(detailImages),
+      detail_images: finalDetailImages,
       skus,
       raw: {
         source: "structured",
         desc_url: meta.descUrl || null,
         page_data_sources: productData?.__tbtSources || productData?.__tbtSource || null,
+        network_response_count: Array.isArray(productData?.__tbtNetworkResponses) ? productData.__tbtNetworkResponses.length : 0,
+        network_parsed_urls: productData?.__tbtNetworkParsedUrls || [],
+        detail_sources: meta.detailSources || {},
         counts: {
           main: mainImages.length,
           sku: colorImages.length,
-          detail: dedupeUrlList(detailImages).length
+          detail: finalDetailImages.length
         },
-        warnings: dedupeUrlList(detailImages).length ? [] : ["structured_detail_images_empty"]
+        warnings: finalDetailImages.length ? [] : ["structured_detail_images_empty"]
       }
     };
   }
@@ -1772,23 +2064,46 @@
 
   async function collect() {
     try {
-      const productData = await readPageGlobals(2500);
+      await sleep(1000);
+      const pageData = await readPageGlobals(2500);
+      const productData = pageData ? mergeCapturedNetworkData(pageData) : null;
 
       let detailImages = [];
       let descUrl = null;
+      const detailSources = {
+        embedded: 0,
+        network: 0,
+        descApi: 0,
+        videoCover: 0,
+        strictDom: 0
+      };
       if (productData) {
         descUrl = extractStructuredDescUrl(productData);
-        detailImages = extractEmbeddedDetailImages(productData);
+        const embeddedImages = extractEmbeddedDetailImages(productData);
+        const networkImages = extractNetworkDetailImages(productData);
+        const videoCoverImages = extractStructuredVideoCoverImages(productData);
+        detailSources.embedded = embeddedImages.length;
+        detailSources.network = networkImages.length;
+        detailSources.videoCover = videoCoverImages.length;
+        detailImages = dedupeUrlList([...embeddedImages, ...networkImages, ...videoCoverImages]);
         if (descUrl) {
+          const descImages = await fetchDetailImagesFromDescUrl(descUrl);
+          detailSources.descApi = descImages.length;
           detailImages = dedupeUrlList([
             ...detailImages,
-            ...(await fetchDetailImagesFromDescUrl(descUrl))
+            ...descImages
           ]);
         }
+
+        await warmUpLazyContent();
+        await waitForImageSettle(600);
+        const strictDomImages = collectStrictDetailDomImages();
+        detailSources.strictDom = strictDomImages.length;
+        detailImages = dedupeUrlList([...detailImages, ...strictDomImages]);
       }
 
       const structured = productData
-        ? buildResultFromStructured(productData, detailImages, { descUrl })
+        ? buildResultFromStructured(productData, detailImages, { descUrl, detailSources })
         : null;
 
       let finalResult;
@@ -1796,7 +2111,19 @@
         finalResult = structured;
       } else {
         const fallback = await collectViaDom();
-        finalResult = { ...fallback, raw: { ...(fallback.raw || {}), source: "dom-fallback" } };
+        const strictDomImages = collectStrictDetailDomImages();
+        finalResult = {
+          ...fallback,
+          detail_images: strictDomImages.length ? strictDomImages : fallback.detail_images,
+          raw: {
+            ...(fallback.raw || {}),
+            source: "dom-fallback",
+            detail_sources: {
+              strictDom: strictDomImages.length,
+              legacyDom: Array.isArray(fallback.detail_images) ? fallback.detail_images.length : 0
+            }
+          }
+        };
       }
 
       sendCollectResult(finalResult);

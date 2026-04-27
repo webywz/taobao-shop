@@ -102,6 +102,124 @@
     return cloned;
   }
 
+  const capturedResponses = [];
+
+  function shouldCaptureUrl(url) {
+    const value = String(url || "");
+    return /(?:mtop|h5api|detail|desc|pcdetail|itemDesc|imageTextInfo|icoss)/i.test(value);
+  }
+
+  function normalizeUrlLikeText(value) {
+    return String(value || "")
+      .replace(/&amp;/g, "&")
+      .replace(/\\u002F/gi, "/")
+      .replace(/\\\//g, "/");
+  }
+
+  function extractImageUrlsFromText(text) {
+    const urls = [];
+    const seen = new Set();
+    const normalized = normalizeUrlLikeText(text);
+    const pattern =
+      /((?:https?:)?\/\/(?:img|gw|g-search|gd|imgextra)\.alicdn\.com\/[^"'\\\s<>]+?\.(?:jpe?g|png|webp|gif|bmp|avif)(?:\?[^"'\\\s<>]*)?)/gi;
+    let matched;
+
+    while ((matched = pattern.exec(normalized))) {
+      const url = matched[1];
+      if (seen.has(url)) continue;
+      seen.add(url);
+      urls.push(url);
+      if (urls.length >= 600) break;
+    }
+
+    return urls;
+  }
+
+  function isLikelyDetailResponse(url, body) {
+    const value = String(url || "");
+    if (/desc|imageTextInfo|itemDesc|pcdetail/i.test(value)) return true;
+    return /pcDescContent|mobileDescContent|wdescContent|descContent|图文详情|商品详情/i.test(body.slice(0, 120000));
+  }
+
+  function rememberResponse(url, body, source, contentType) {
+    if (!url || !body || typeof body !== "string") return;
+    if (!shouldCaptureUrl(url) && !/desc|image|pic|img|sku|apiStack|pcDescContent/i.test(body.slice(0, 4000))) {
+      return;
+    }
+
+    capturedResponses.push({
+      url: String(url),
+      source,
+      contentType: contentType || "",
+      body: body.slice(0, 6_000_000),
+      imageUrls: extractImageUrlsFromText(body),
+      likelyDetail: isLikelyDetailResponse(url, body),
+      ts: Date.now()
+    });
+
+    while (capturedResponses.length > 40) {
+      capturedResponses.shift();
+    }
+  }
+
+  function installFetchCapture() {
+    if (!window.fetch || window.__tbtFetchCaptureInstalled) return;
+    window.__tbtFetchCaptureInstalled = true;
+    const originalFetch = window.fetch;
+
+    window.fetch = function (...args) {
+      const requestUrl = typeof args[0] === "string" ? args[0] : args[0]?.url;
+      return originalFetch.apply(this, args).then(response => {
+        try {
+          const url = response.url || requestUrl;
+          if (shouldCaptureUrl(url)) {
+            response.clone().text().then(text => {
+              rememberResponse(url, text, "fetch", response.headers?.get("content-type") || "");
+            }).catch(() => {});
+          }
+        } catch {
+          // ignore capture errors
+        }
+        return response;
+      });
+    };
+  }
+
+  function installXhrCapture() {
+    if (!window.XMLHttpRequest || window.__tbtXhrCaptureInstalled) return;
+    window.__tbtXhrCaptureInstalled = true;
+    const originalOpen = XMLHttpRequest.prototype.open;
+    const originalSend = XMLHttpRequest.prototype.send;
+
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+      this.__tbtUrl = url;
+      return originalOpen.call(this, method, url, ...rest);
+    };
+
+    XMLHttpRequest.prototype.send = function (...args) {
+      this.addEventListener("load", () => {
+        try {
+          const url = this.responseURL || this.__tbtUrl;
+          if (!shouldCaptureUrl(url)) return;
+          if (this.responseType && this.responseType !== "text" && this.responseType !== "") return;
+          rememberResponse(
+            url,
+            this.responseText || "",
+            "xhr",
+            this.getResponseHeader("content-type") || ""
+          );
+        } catch {
+          // ignore capture errors
+        }
+      });
+
+      return originalSend.apply(this, args);
+    };
+  }
+
+  installFetchCapture();
+  installXhrCapture();
+
   function readKnownGlobals() {
     const sources = [
       () => window.runParams && (window.runParams.data || window.runParams),
@@ -155,7 +273,12 @@
   }
 
   function buildPayload() {
-    return readKnownGlobals() || readFromInlineScripts();
+    const data = readKnownGlobals() || readFromInlineScripts() || {};
+    if (capturedResponses.length) {
+      data.__tbtNetworkResponses = safeClone(capturedResponses) || [];
+      data.__tbtSources = Array.from(new Set([...(data.__tbtSources || []), "network"]));
+    }
+    return Object.keys(data).length ? data : null;
   }
 
   window.addEventListener("message", event => {
