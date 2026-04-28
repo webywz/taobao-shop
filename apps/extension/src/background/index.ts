@@ -675,7 +675,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     void (async () => {
       const deviceId = await ensureDeviceRegistered()
       const response = await fetch(
-        `${API_BASE_URL}/v1/devices/${deviceId}/bind-license`,
+        `${API_BASE_URL}/v1/devices/${deviceId}/bind`,
         {
           method: "POST",
           headers: {
