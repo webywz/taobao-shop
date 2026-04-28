@@ -1,0 +1,16 @@
+FROM node:20-alpine as build-stage
+
+WORKDIR /app
+COPY package*.json ./
+COPY apps/web/package*.json ./apps/web/
+COPY packages/shared/package*.json ./packages/shared/
+
+RUN npm ci
+
+COPY . .
+RUN npm run build --workspace @tb-pdd-image/web
+
+FROM nginx:stable-alpine as production-stage
+COPY --from=build-stage /app/apps/web/dist /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
