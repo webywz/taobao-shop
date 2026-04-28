@@ -126,6 +126,18 @@ function getImageDimensions(element: HTMLImageElement) {
   }
 }
 
+function getDetailImageDimensions(element: HTMLImageElement) {
+  const width =
+    element.naturalWidth || element.width || getElementDimensionValue(element, "width") || undefined
+  const height =
+    element.naturalHeight || element.height || getElementDimensionValue(element, "height") || undefined
+
+  return {
+    width,
+    height
+  }
+}
+
 function isIgnoredImageUrl(sourceUrl: string) {
   return (
     sourceUrl.startsWith("data:") ||
@@ -133,6 +145,16 @@ function isIgnoredImageUrl(sourceUrl: string) {
     /\/s\.gif(?:$|\?)/i.test(sourceUrl) ||
     /-tps-2-2\./i.test(sourceUrl) ||
     /(?:^|[\/_])2x2(?:[._-]|$)/i.test(sourceUrl) ||
+    /\.(svg)(?:$|\?)/i.test(sourceUrl) ||
+    /(sprite|icon|logo|avatar|coupon|badge|qr|qrcode)/i.test(sourceUrl)
+  )
+}
+
+function isIgnoredImageUrlForDetail(sourceUrl: string) {
+  return (
+    sourceUrl.startsWith("data:") ||
+    sourceUrl.startsWith("blob:") ||
+    /\/s\.gif(?:$|\?)/i.test(sourceUrl) ||
     /\.(svg)(?:$|\?)/i.test(sourceUrl) ||
     /(sprite|icon|logo|avatar|coupon|badge|qr|qrcode)/i.test(sourceUrl)
   )
@@ -233,22 +255,6 @@ function buildDedupeKey(sourceUrl: string) {
   }
 }
 
-function getCombinedSelector(selectors: string[]) {
-  return selectors.join(", ")
-}
-
-function matchesRegion(element: HTMLImageElement, selector: string) {
-  if (!selector) {
-    return false
-  }
-
-  try {
-    return Boolean(element.closest(selector))
-  } catch {
-    return false
-  }
-}
-
 function parseSnapshotDocument(pageHtml: string) {
   try {
     return new DOMParser().parseFromString(pageHtml, "text/html")
@@ -309,46 +315,50 @@ function extractBySelectors(
   return dedupeCandidates(candidates).slice(0, limit)
 }
 
-function collectAllCandidatesFromSnapshot(
+function extractDetailBySelectors(
+  selectors: string[],
+  limit: number,
   sourceDocument: Document,
-  mainRegionSelector: string,
-  skuRegionSelector: string,
-  detailRegionSelector: string,
-  baseUrl: string
-) {
+  baseUrl: string,
+  options: ExtractOptions = {}
+): CandidateImage[] {
+  const images = selectors.flatMap((selector) =>
+    Array.from(sourceDocument.querySelectorAll(selector)).filter(
+      (node): node is HTMLImageElement => node instanceof HTMLImageElement
+    )
+  )
   const candidates: CandidateImage[] = []
 
-  Array.from(sourceDocument.images).forEach((element, index) => {
+  for (const element of images) {
     const rawUrl = collectImageUrlFromElement(element)
     const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl, baseUrl) : null
 
-    if (!sourceUrl || isIgnoredImageUrl(sourceUrl)) {
-      return
+    if (!sourceUrl || isIgnoredImageUrlForDetail(sourceUrl)) {
+      continue
     }
 
-    const { width, height } = getImageDimensions(element)
-    const hasKnownSize = (width ?? 0) > 0 || (height ?? 0) > 0
+    const { width, height } = getDetailImageDimensions(element)
 
-    if (hasKnownSize && (width ?? 0) < 60 && (height ?? 0) < 60) {
-      return
+    if ((width ?? 0) < 80 && (height ?? 0) < 80) {
+      continue
     }
 
-    candidates.push({
+    const candidate: CandidateImage = {
       sourceUrl,
       width,
       height,
       mimeType: undefined,
-      skuName: matchesRegion(element, skuRegionSelector) ? readSkuName(element) : null,
-      top: index,
-      area: (width ?? 0) * (height ?? 0),
-      inMainRegion: matchesRegion(element, mainRegionSelector),
-      inSkuRegion: matchesRegion(element, skuRegionSelector),
-      inDetailRegion: matchesRegion(element, detailRegionSelector),
-      fromIframe: false
-    })
-  })
+      skuName: null
+    }
 
-  return candidates
+    if (options.predicate && !options.predicate(candidate)) {
+      continue
+    }
+
+    candidates.push(candidate)
+  }
+
+  return dedupeCandidates(candidates).slice(0, limit)
 }
 
 function getImageStabilitySnapshot() {
@@ -469,11 +479,11 @@ function extractDetailImagesByTextAnchor(limit: number, sourceDocument: Document
     for (const image of targetImages) {
       const rawUrl = collectImageUrlFromElement(image)
       const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl, baseUrl) : null
-      if (!sourceUrl || isIgnoredImageUrl(sourceUrl)) {
+      if (!sourceUrl || isIgnoredImageUrlForDetail(sourceUrl)) {
         continue
       }
 
-      const { width, height } = getImageDimensions(image)
+      const { width, height } = getDetailImageDimensions(image)
       const candidate: CandidateImage = {
         sourceUrl,
         width,
@@ -491,135 +501,6 @@ function extractDetailImagesByTextAnchor(limit: number, sourceDocument: Document
   }
 
   return dedupeCandidates(candidates).slice(0, limit)
-}
-
-function excludeKnownProductImages(
-  candidates: CandidateImage[],
-  excludedCandidates: CandidateImage[]
-) {
-  const excludedKeys = new Set(excludedCandidates.map((candidate) => buildDedupeKey(candidate.sourceUrl)))
-
-  return candidates.filter((candidate) => !excludedKeys.has(buildDedupeKey(candidate.sourceUrl)))
-}
-
-function rankByVisualPriority(candidates: CandidateImage[]) {
-  return [...candidates].sort((left, right) => {
-    const leftArea = left.area ?? ((left.width ?? 0) * (left.height ?? 0))
-    const rightArea = right.area ?? ((right.width ?? 0) * (right.height ?? 0))
-
-    if (rightArea !== leftArea) {
-      return rightArea - leftArea
-    }
-
-    return (left.top ?? 0) - (right.top ?? 0)
-  })
-}
-
-function selectDetailCandidates(
-  allCandidates: CandidateImage[],
-  excludedCandidates: CandidateImage[]
-) {
-  const seen = new Set<string>()
-
-  return excludeKnownProductImages(allCandidates, excludedCandidates)
-    .filter((candidate) => {
-      const width = candidate.width ?? 0
-      const height = candidate.height ?? 0
-      const shortestEdge = Math.min(width, height)
-      const longestEdge = Math.max(width, height)
-      const area = candidate.area ?? width * height
-      const belowFold = (candidate.top ?? 0) > window.innerHeight * 0.7
-
-      if (!candidate.inDetailRegion && !belowFold) {
-        return false
-      }
-
-      if (longestEdge < 360) {
-        return false
-      }
-
-      if (shortestEdge < 220) {
-        return false
-      }
-
-      if (area < 90000) {
-        return false
-      }
-
-      const dedupeKey = buildDedupeKey(candidate.sourceUrl)
-
-      if (seen.has(dedupeKey)) {
-        return false
-      }
-
-      seen.add(dedupeKey)
-      return true
-    })
-    .sort((left, right) => {
-      const leftPrimaryScore =
-        (left.inDetailRegion ? 1000 : 0) +
-        (left.fromIframe ? 400 : 0) +
-        ((left.top ?? 0) > window.innerHeight ? 200 : 0)
-      const rightPrimaryScore =
-        (right.inDetailRegion ? 1000 : 0) +
-        (right.fromIframe ? 400 : 0) +
-        ((right.top ?? 0) > window.innerHeight ? 200 : 0)
-
-      if (rightPrimaryScore !== leftPrimaryScore) {
-        return rightPrimaryScore - leftPrimaryScore
-      }
-
-      const rightArea = right.area ?? ((right.width ?? 0) * (right.height ?? 0))
-      const leftArea = left.area ?? ((left.width ?? 0) * (left.height ?? 0))
-
-      if (rightArea !== leftArea) {
-        return rightArea - leftArea
-      }
-
-      return (left.top ?? 0) - (right.top ?? 0)
-    })
-    .slice(0, 30)
-}
-
-function selectOtherCandidates(
-  allCandidates: CandidateImage[],
-  excludedCandidates: CandidateImage[]
-) {
-  return dedupeCandidates(excludeKnownProductImages(allCandidates, excludedCandidates))
-    .filter((candidate) => {
-      const width = candidate.width ?? 0
-      const height = candidate.height ?? 0
-      const area = candidate.area ?? width * height
-
-      if (area < 3600) {
-        return false
-      }
-
-      if (width < 60 && height < 60) {
-        return false
-      }
-
-      return true
-    })
-    .sort((left, right) => {
-      const leftContextScore =
-        (left.inDetailRegion ? 300 : 0) + (left.inMainRegion ? 150 : 0) + (left.inSkuRegion ? 100 : 0)
-      const rightContextScore =
-        (right.inDetailRegion ? 300 : 0) +
-        (right.inMainRegion ? 150 : 0) +
-        (right.inSkuRegion ? 100 : 0)
-
-      if (rightContextScore !== leftContextScore) {
-        return rightContextScore - leftContextScore
-      }
-
-      if ((left.top ?? 0) !== (right.top ?? 0)) {
-        return (left.top ?? 0) - (right.top ?? 0)
-      }
-
-      return (right.area ?? 0) - (left.area ?? 0)
-    })
-    .slice(0, 200)
 }
 
 export async function extractProductFromPage(): Promise<ExtractedProduct> {
@@ -667,95 +548,16 @@ export async function extractProductFromPage(): Promise<ExtractedProduct> {
     "[class*='desc'] img"
   ]
 
-  const mainRegionSelector = getCombinedSelector([
-    "[class*='thumbnailsWrap']",
-    "[class*='thumbnails']",
-    "[class*='thumbnailItem']",
-    "[class*='thumbnail']",
-    "#J_UlThumb",
-    "[class*='mainPic']",
-    "[class*='main-pic']",
-    "[class*='tb-thumb']",
-    "[class*='thumbnail']",
-    "[class*='gallery']",
-    "[class*='swiper']",
-    "[class*='carousel']"
-  ])
-  const skuRegionSelector = getCombinedSelector([
-    "#skuOptionsArea",
-    "[id*='skuOptions']",
-    "[class*='skuWrapper'] [class*='skuValueWrap']",
-    "[class*='skuWrapper'] [class*='valueItem']",
-    "[class*='skuValueWrap'] [class*='valueItem']"
-  ])
-  const detailRegionSelector = getCombinedSelector([
-    ...detailPrimarySelectors.map((selector) => selector.replace(/\s+img$/, "")),
-    ...detailFallbackSelectors.map((selector) => selector.replace(/\s+img$/, ""))
-  ])
-
-  const structuredCandidates: CandidateImage[] = []
-  const structuredMain = structuredCandidates.filter((candidate) => candidate.inMainRegion)
-  const structuredSku = structuredCandidates.filter((candidate) => candidate.inSkuRegion)
-  const structuredDetail = structuredCandidates.filter((candidate) => candidate.inDetailRegion)
-  const structuredOther = structuredCandidates.filter(
-    (candidate) => !candidate.inMainRegion && !candidate.inSkuRegion && !candidate.inDetailRegion
-  )
-
-  const main = dedupeCandidates([
-    ...extractBySelectors(mainSelectors, 20, sourceDocument, canonicalUrl, {
-      allowUnknownSize: true,
-      minEdge: 20
-    }),
-    ...structuredMain
-  ]).slice(0, 6)
-  const allCandidates = collectAllCandidatesFromSnapshot(
-    sourceDocument,
-    mainRegionSelector,
-    skuRegionSelector,
-    detailRegionSelector,
-    canonicalUrl
-  )
-  const sku = dedupeCandidates([
-    ...extractBySelectors(skuSelectors, 60, sourceDocument, canonicalUrl, {
-      skuNameFromElement: true,
-      allowUnknownSize: true,
-      minEdge: 40
-    }),
-    ...structuredSku,
-    ...rankByVisualPriority(
-      allCandidates.filter(
-        (candidate) => {
-          if (!candidate.inSkuRegion) {
-            return false
-          }
-
-          const width = candidate.width ?? 0
-          const height = candidate.height ?? 0
-          const hasKnownSize = width > 0 || height > 0
-
-          if (hasKnownSize && width < 20 && height < 20) {
-            return false
-          }
-
-          return true
-        }
-      )
-    ).slice(0, 40)
-  ]).slice(0, 40)
-  const fallbackMain = main.length
-    ? main
-    : rankByVisualPriority(
-        allCandidates.filter(
-          (candidate) =>
-            candidate.inMainRegion &&
-            !candidate.inSkuRegion &&
-            !candidate.inDetailRegion &&
-            (candidate.width ?? 0) >= 240 &&
-            (candidate.height ?? 0) >= 240 &&
-            (candidate.top ?? 0) < 120
-        )
-      ).slice(0, 6)
-  const detailPrimary = extractBySelectors(
+  const main = extractBySelectors(mainSelectors, 6, sourceDocument, canonicalUrl, {
+    allowUnknownSize: true,
+    minEdge: 20
+  })
+  const sku = extractBySelectors(skuSelectors, 60, sourceDocument, canonicalUrl, {
+    skuNameFromElement: true,
+    allowUnknownSize: true,
+    minEdge: 20
+  })
+  const detailPrimary = extractDetailBySelectors(
     detailPrimarySelectors,
     60,
     sourceDocument,
@@ -764,7 +566,7 @@ export async function extractProductFromPage(): Promise<ExtractedProduct> {
       predicate: isLikelyDetailImage
     }
   )
-  const detailFallback = extractBySelectors(
+  const detailFallback = extractDetailBySelectors(
     detailFallbackSelectors,
     60,
     sourceDocument,
@@ -774,21 +576,9 @@ export async function extractProductFromPage(): Promise<ExtractedProduct> {
     }
   )
   const detailByTextAnchor = extractDetailImagesByTextAnchor(120, sourceDocument, canonicalUrl)
-  const detailCandidates =
-    detailPrimary.length || detailFallback.length || detailByTextAnchor.length || structuredDetail.length
-      ? [
-          ...detailByTextAnchor,
-          ...detailPrimary,
-          ...detailFallback,
-          ...structuredDetail,
-          ...selectDetailCandidates(allCandidates, [...fallbackMain, ...sku])
-        ]
-      : selectDetailCandidates(allCandidates, [...fallbackMain, ...sku])
+  const detailCandidates = [...detailByTextAnchor, ...detailPrimary, ...detailFallback]
   const detail = dedupeCandidates(detailCandidates).slice(0, 80)
-  const other = dedupeCandidates([
-    ...selectOtherCandidates(allCandidates, [...fallbackMain, ...sku, ...detail]),
-    ...structuredOther
-  ]).slice(0, 200)
+  const other: CandidateImage[] = []
 
   const title = sourceDocument.title?.replace(/\s+/g, " ").trim() || null
 
@@ -798,7 +588,7 @@ export async function extractProductFromPage(): Promise<ExtractedProduct> {
     canonicalUrl,
     pageHtml,
     images: {
-      main: toManifestAssets("main", fallbackMain),
+      main: toManifestAssets("main", main),
       sku: toManifestAssets("sku", sku),
       detail: toManifestAssets("detail", detail),
       other: toManifestAssets("other", other)
