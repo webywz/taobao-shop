@@ -21,12 +21,22 @@ class OssStorageService:
             aws_secret_access_key=os.environ.get("OSS_ACCESS_KEY_SECRET", "minioadmin"),
             config=boto3.session.Config(signature_version='s3v4')
         )
-
-    def generate_presigned_url(self, key: str, expires_in: int = 3600) -> str:
-        """Generate a presigned URL for downloading a file."""
+        
+        # Ensure bucket exists (mostly for local MinIO)
         try:
+            self.s3_client.head_bucket(Bucket=self.bucket)
+        except Exception:
+            try:
+                self.s3_client.create_bucket(Bucket=self.bucket)
+            except Exception as e:
+                self.logger.error(f"Error creating bucket {self.bucket}: {e}")
+
+    def generate_presigned_url(self, key: str, expires_in: int = 3600, method: str = "GET") -> str:
+        """Generate a presigned URL for downloading or uploading a file."""
+        try:
+            client_method = 'put_object' if method.upper() == 'PUT' else 'get_object'
             url = self.s3_client.generate_presigned_url(
-                'get_object',
+                client_method,
                 Params={'Bucket': self.bucket, 'Key': key},
                 ExpiresIn=expires_in
             )

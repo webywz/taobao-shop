@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Header, Request, Response
 from typing import Optional
 from app.store import store
 
@@ -16,7 +16,10 @@ async def list_tasks(authorization: Optional[str] = Header(None)):
 
 @router.get("/queue/next")
 async def next_task(authorization: Optional[str] = Header(None)):
-    return await store.next_task(authorization)
+    task = await store.next_task(authorization)
+    if task is None:
+        return Response(status_code=204)
+    return task
 
 @router.get("/{task_id}")
 async def get_task(task_id: str, authorization: Optional[str] = Header(None)):

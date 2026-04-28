@@ -5,6 +5,16 @@ from fastapi import HTTPException
 from app.database import database, create_id, plus_days, detect_platform
 from app.storage import oss_storage
 
+def _to_iso(dt):
+    if dt is None:
+        return None
+    if isinstance(dt, str):
+        dt = dt.replace(" ", "T")
+        if not dt.endswith("Z") and "+" not in dt:
+            dt += "+00:00"
+        return dt
+    return dt.isoformat()
+
 class DatabaseStore:
     def __init__(self):
         self.db = database
@@ -57,7 +67,7 @@ class DatabaseStore:
             "licenseId": license_id,
             "licenseToken": license_token,
             "durationDays": duration_days,
-            "expiresAt": expires_at.isoformat(),
+            "expiresAt": _to_iso(expires_at),
             "activationCode": activation_code
         }
 
@@ -73,7 +83,7 @@ class DatabaseStore:
             "licenseId": row["id"],
             "licenseToken": row["token"],
             "durationDays": row["duration_days"],
-            "expiresAt": row["expires_at"].isoformat()
+            "expiresAt": _to_iso(row["expires_at"])
         }
 
     async def get_current_license(self, authorization: str | None):
@@ -99,7 +109,7 @@ class DatabaseStore:
             "status": row["status"],
             "licenseId": row["license_id"],
             "extensionVersion": row["extension_version"],
-            "lastHeartbeatAt": row["last_heartbeat_at"].isoformat() if row["last_heartbeat_at"] else None
+            "lastHeartbeatAt": _to_iso(row["last_heartbeat_at"])
         }
 
     async def register_device(self, input_data: dict):
@@ -174,10 +184,10 @@ class DatabaseStore:
             """,
             {
                 "status": input_data.get("status", device["status"]),
-                "browser_name": input_data.get("browserName"),
-                "browser_version": input_data.get("browserVersion"),
-                "os": input_data.get("os"),
-                "extension_version": input_data.get("extensionVersion"),
+                "browser_name": input_data.get("browserName", "chrome"),
+                "browser_version": input_data.get("browserVersion", "unknown"),
+                "os": input_data.get("os", "unknown"),
+                "extension_version": input_data.get("extensionVersion", "unknown"),
                 "did": device_id
             }
         )
@@ -186,7 +196,7 @@ class DatabaseStore:
             "deviceId": device_id,
             "currentTaskId": input_data.get("currentTaskId"),
             "taskStatus": input_data.get("taskStatus"),
-            "receivedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            "receivedAt": _to_iso(datetime.datetime.now(datetime.timezone.utc))
         }
 
     async def create_task(self, input_data: dict, authorization: str | None):
@@ -219,7 +229,7 @@ class DatabaseStore:
             "status": "pending",
             "sourceUrl": input_data["sourceUrl"],
             "canonicalUrl": input_data["sourceUrl"],
-            "createdAt": created_at.isoformat()
+            "createdAt": _to_iso(created_at)
         }
 
     async def hydrate_task(self, row: dict):
@@ -294,12 +304,12 @@ class DatabaseStore:
                 "retentionDays": archive_row["retention_days"],
                 "downloadUrl": archive_row["download_url"],
                 "fileSize": archive_row["file_size"],
-                "expiresAt": archive_row["expires_at"].isoformat() if archive_row["expires_at"] else None
+                "expiresAt": _to_iso(archive_row["expires_at"])
             } if archive_row else {
                 "status": "not_started"
             },
-            "createdAt": row["created_at"].isoformat() if row["created_at"] else None,
-            "completedAt": row["completed_at"].isoformat() if row["completed_at"] else None
+            "createdAt": _to_iso(row["created_at"]),
+            "completedAt": _to_iso(row["completed_at"])
         }
 
     async def list_tasks(self, authorization: str | None):
@@ -354,7 +364,7 @@ class DatabaseStore:
             "platform": row["platform"],
             "sourceUrl": row["source_url"],
             "taskToken": row["task_token"],
-            "expiresAt": plus_days(1).isoformat()
+            "expiresAt": _to_iso(plus_days(1))
         }
 
     async def _get_task_record_by_token(self, task_id: str, task_token: str):
@@ -381,7 +391,7 @@ class DatabaseStore:
         return {
             "taskId": task_id,
             "status": "claimed",
-            "claimedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            "claimedAt": _to_iso(datetime.datetime.now(datetime.timezone.utc))
         }
 
     async def _assert_task_owned_by_device(self, task_id: str, task_token: str, device_id: str):
@@ -408,7 +418,7 @@ class DatabaseStore:
             "taskId": task_id,
             "status": input_data["status"],
             "stage": input_data.get("stage"),
-            "updatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            "updatedAt": _to_iso(datetime.datetime.now(datetime.timezone.utc))
         }
 
     async def _get_task_by_id_without_auth(self, task_id: str):
@@ -556,7 +566,7 @@ class DatabaseStore:
             "retentionDays": row["retention_days"],
             "downloadUrl": row["download_url"],
             "fileSize": row["file_size"],
-            "expiresAt": row["expires_at"].isoformat() if row["expires_at"] else None
+            "expiresAt": _to_iso(row["expires_at"])
         }
 
     async def convert_asset(self, asset_id: str, input_data: dict, authorization: str | None):
@@ -678,7 +688,7 @@ class DatabaseStore:
         return {
             "taskId": input_data["taskId"],
             "completedCount": len(uploads),
-            "completedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "completedAt": _to_iso(datetime.datetime.now(datetime.timezone.utc)),
             "uploads": uploads
         }
 
