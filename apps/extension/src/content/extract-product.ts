@@ -25,6 +25,8 @@ type CandidateImage = {
 type ExtractOptions = {
   skuNameFromElement?: boolean
   predicate?: (candidate: CandidateImage) => boolean
+  allowUnknownSize?: boolean
+  minEdge?: number
 }
 
 function sleep(ms: number) {
@@ -90,11 +92,33 @@ function getElementDimensionValue(
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 }
 
+function getStyleDimensionValue(
+  element: HTMLImageElement,
+  attrName: "width" | "height"
+) {
+  const styleValue = element.style?.[attrName]
+
+  if (!styleValue) {
+    return undefined
+  }
+
+  const parsed = Number.parseFloat(styleValue)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : undefined
+}
+
 function getImageDimensions(element: HTMLImageElement) {
   const width =
-    element.naturalWidth || element.width || getElementDimensionValue(element, "width") || undefined
+    element.naturalWidth ||
+    element.width ||
+    getElementDimensionValue(element, "width") ||
+    getStyleDimensionValue(element, "width") ||
+    undefined
   const height =
-    element.naturalHeight || element.height || getElementDimensionValue(element, "height") || undefined
+    element.naturalHeight ||
+    element.height ||
+    getElementDimensionValue(element, "height") ||
+    getStyleDimensionValue(element, "height") ||
+    undefined
 
   return {
     width,
@@ -107,6 +131,8 @@ function isIgnoredImageUrl(sourceUrl: string) {
     sourceUrl.startsWith("data:") ||
     sourceUrl.startsWith("blob:") ||
     /\/s\.gif(?:$|\?)/i.test(sourceUrl) ||
+    /-tps-2-2\./i.test(sourceUrl) ||
+    /(?:^|[\/_])2x2(?:[._-]|$)/i.test(sourceUrl) ||
     /\.(svg)(?:$|\?)/i.test(sourceUrl) ||
     /(sprite|icon|logo|avatar|coupon|badge|qr|qrcode)/i.test(sourceUrl)
   )
@@ -254,8 +280,14 @@ function extractBySelectors(
     }
 
     const { width, height } = getImageDimensions(element)
+    const hasKnownSize = (width ?? 0) > 0 || (height ?? 0) > 0
+    const minEdge = options.minEdge ?? 80
 
-    if ((width ?? 0) < 80 && (height ?? 0) < 80) {
+    if (hasKnownSize && (width ?? 0) < minEdge && (height ?? 0) < minEdge) {
+      continue
+    }
+
+    if (!hasKnownSize && !options.allowUnknownSize) {
       continue
     }
 
@@ -295,8 +327,9 @@ function collectAllCandidatesFromSnapshot(
     }
 
     const { width, height } = getImageDimensions(element)
+    const hasKnownSize = (width ?? 0) > 0 || (height ?? 0) > 0
 
-    if ((width ?? 0) < 60 && (height ?? 0) < 60) {
+    if (hasKnownSize && (width ?? 0) < 60 && (height ?? 0) < 60) {
       return
     }
 
@@ -597,19 +630,26 @@ export async function extractProductFromPage(): Promise<ExtractedProduct> {
   const sourceDocument = snapshotDocument ?? document
 
   const mainSelectors = [
+    "[class*='thumbnailsWrap'] [class*='thumbnailPic']",
+    "[class*='thumbnails'] [class*='thumbnailPic']",
+    "[class*='thumbnailItem'] [class*='thumbnailPic']",
+    "[class*='thumbnail'] [class*='thumbnailPic']",
     "#J_UlThumb img",
+    "[class*='mainPic'] img",
+    "[class*='main-pic'] img",
     "[class*='tb-thumb'] img",
     "[class*='thumbnail'] img",
     "[class*='gallery'] img",
-    "[class*='swiper'] img"
+    "[class*='swiper'] img",
+    "[class*='carousel'] img"
   ]
 
   const skuSelectors = [
-    "[class*='sku'] img",
-    "[class*='Sku'] img",
-    "[class*='prop'] img",
-    "[class*='spec'] img",
-    "[data-sku] img"
+    "#skuOptionsArea [class*='valueItemImgWrap'] img",
+    "#skuOptionsArea [class*='valueItem'] img",
+    "#skuOptionsArea img",
+    "[id*='skuOptions'] [class*='valueItemImgWrap'] img",
+    "[id*='skuOptions'] [class*='valueItem'] img"
   ]
 
   const detailPrimarySelectors = [
@@ -628,18 +668,25 @@ export async function extractProductFromPage(): Promise<ExtractedProduct> {
   ]
 
   const mainRegionSelector = getCombinedSelector([
+    "[class*='thumbnailsWrap']",
+    "[class*='thumbnails']",
+    "[class*='thumbnailItem']",
+    "[class*='thumbnail']",
     "#J_UlThumb",
+    "[class*='mainPic']",
+    "[class*='main-pic']",
     "[class*='tb-thumb']",
     "[class*='thumbnail']",
     "[class*='gallery']",
-    "[class*='swiper']"
+    "[class*='swiper']",
+    "[class*='carousel']"
   ])
   const skuRegionSelector = getCombinedSelector([
-    "[class*='sku']",
-    "[class*='Sku']",
-    "[class*='prop']",
-    "[class*='spec']",
-    "[data-sku]"
+    "#skuOptionsArea",
+    "[id*='skuOptions']",
+    "[class*='skuWrapper'] [class*='skuValueWrap']",
+    "[class*='skuWrapper'] [class*='valueItem']",
+    "[class*='skuValueWrap'] [class*='valueItem']"
   ])
   const detailRegionSelector = getCombinedSelector([
     ...detailPrimarySelectors.map((selector) => selector.replace(/\s+img$/, "")),
@@ -655,9 +702,12 @@ export async function extractProductFromPage(): Promise<ExtractedProduct> {
   )
 
   const main = dedupeCandidates([
-    ...extractBySelectors(mainSelectors, 12, sourceDocument, canonicalUrl),
+    ...extractBySelectors(mainSelectors, 20, sourceDocument, canonicalUrl, {
+      allowUnknownSize: true,
+      minEdge: 20
+    }),
     ...structuredMain
-  ]).slice(0, 12)
+  ]).slice(0, 6)
   const allCandidates = collectAllCandidatesFromSnapshot(
     sourceDocument,
     mainRegionSelector,
@@ -667,15 +717,28 @@ export async function extractProductFromPage(): Promise<ExtractedProduct> {
   )
   const sku = dedupeCandidates([
     ...extractBySelectors(skuSelectors, 60, sourceDocument, canonicalUrl, {
-      skuNameFromElement: true
+      skuNameFromElement: true,
+      allowUnknownSize: true,
+      minEdge: 40
     }),
     ...structuredSku,
     ...rankByVisualPriority(
       allCandidates.filter(
-        (candidate) =>
-          candidate.inSkuRegion &&
-          (candidate.width ?? 0) >= 40 &&
-          (candidate.height ?? 0) >= 40
+        (candidate) => {
+          if (!candidate.inSkuRegion) {
+            return false
+          }
+
+          const width = candidate.width ?? 0
+          const height = candidate.height ?? 0
+          const hasKnownSize = width > 0 || height > 0
+
+          if (hasKnownSize && width < 20 && height < 20) {
+            return false
+          }
+
+          return true
+        }
       )
     ).slice(0, 40)
   ]).slice(0, 40)
@@ -684,13 +747,14 @@ export async function extractProductFromPage(): Promise<ExtractedProduct> {
     : rankByVisualPriority(
         allCandidates.filter(
           (candidate) =>
+            candidate.inMainRegion &&
             !candidate.inSkuRegion &&
             !candidate.inDetailRegion &&
             (candidate.width ?? 0) >= 240 &&
             (candidate.height ?? 0) >= 240 &&
             (candidate.top ?? 0) < 120
         )
-      ).slice(0, 12)
+      ).slice(0, 6)
   const detailPrimary = extractBySelectors(
     detailPrimarySelectors,
     60,
