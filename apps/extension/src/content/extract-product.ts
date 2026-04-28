@@ -4,6 +4,7 @@ type ExtractedProduct = {
   title: string | null
   productId: string | null
   canonicalUrl: string
+  pageHtml: string | null
   images: Record<GroupType, ManifestAssetInput[]>
 }
 
@@ -44,9 +45,9 @@ function getDocumentHeight(doc: Document = document) {
   )
 }
 
-function normalizeImageUrl(rawUrl: string) {
+function normalizeImageUrl(rawUrl: string, baseUrl: string) {
   try {
-    const url = new URL(rawUrl, window.location.href)
+    const url = new URL(rawUrl, baseUrl)
     url.hash = ""
     return url.toString()
   } catch {
@@ -54,27 +55,58 @@ function normalizeImageUrl(rawUrl: string) {
   }
 }
 
-function getProductId() {
-  const url = new URL(window.location.href)
+function getProductId(canonicalUrl: string) {
+  const url = new URL(canonicalUrl)
   return url.searchParams.get("id")
 }
 
 function collectImageUrlFromElement(element: HTMLImageElement) {
-  return (
-    element.currentSrc ||
-    element.src ||
+  const lazyUrl =
     element.dataset.src ||
     element.dataset.ksLazyload ||
     element.getAttribute("data-src") ||
     element.getAttribute("data-lazy-src") ||
     element.getAttribute("data-ks-lazyload")
+
+  return (
+    lazyUrl ||
+    element.currentSrc ||
+    element.src ||
+    null
   )
+}
+
+function getElementDimensionValue(
+  element: HTMLImageElement,
+  attrName: "width" | "height"
+) {
+  const attrValue = element.getAttribute(attrName)
+
+  if (!attrValue) {
+    return undefined
+  }
+
+  const parsed = Number.parseInt(attrValue, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function getImageDimensions(element: HTMLImageElement) {
+  const width =
+    element.naturalWidth || element.width || getElementDimensionValue(element, "width") || undefined
+  const height =
+    element.naturalHeight || element.height || getElementDimensionValue(element, "height") || undefined
+
+  return {
+    width,
+    height
+  }
 }
 
 function isIgnoredImageUrl(sourceUrl: string) {
   return (
     sourceUrl.startsWith("data:") ||
     sourceUrl.startsWith("blob:") ||
+    /\/s\.gif(?:$|\?)/i.test(sourceUrl) ||
     /\.(svg)(?:$|\?)/i.test(sourceUrl) ||
     /(sprite|icon|logo|avatar|coupon|badge|qr|qrcode)/i.test(sourceUrl)
   )
@@ -191,13 +223,23 @@ function matchesRegion(element: HTMLImageElement, selector: string) {
   }
 }
 
+function parseSnapshotDocument(pageHtml: string) {
+  try {
+    return new DOMParser().parseFromString(pageHtml, "text/html")
+  } catch {
+    return null
+  }
+}
+
 function extractBySelectors(
   selectors: string[],
   limit: number,
+  sourceDocument: Document,
+  baseUrl: string,
   options: ExtractOptions = {}
 ): CandidateImage[] {
   const images = selectors.flatMap((selector) =>
-    Array.from(document.querySelectorAll(selector)).filter(
+    Array.from(sourceDocument.querySelectorAll(selector)).filter(
       (node): node is HTMLImageElement => node instanceof HTMLImageElement
     )
   )
@@ -205,14 +247,13 @@ function extractBySelectors(
 
   for (const element of images) {
     const rawUrl = collectImageUrlFromElement(element)
-    const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl) : null
+    const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl, baseUrl) : null
 
     if (!sourceUrl || isIgnoredImageUrl(sourceUrl)) {
       continue
     }
 
-    const width = element.naturalWidth || element.width || undefined
-    const height = element.naturalHeight || element.height || undefined
+    const { width, height } = getImageDimensions(element)
 
     if ((width ?? 0) < 80 && (height ?? 0) < 80) {
       continue
@@ -236,89 +277,43 @@ function extractBySelectors(
   return dedupeCandidates(candidates).slice(0, limit)
 }
 
-function collectAccessibleDocuments() {
-  const documents: Array<{
-    doc: Document
-    topOffset: number
-    fromIframe: boolean
-  }> = []
-
-  const visited = new Set<Document>()
-
-  function visit(doc: Document, topOffset: number, fromIframe: boolean) {
-    if (visited.has(doc)) {
-      return
-    }
-
-    visited.add(doc)
-    documents.push({
-      doc,
-      topOffset,
-      fromIframe
-    })
-
-    const iframes = Array.from(doc.querySelectorAll("iframe"))
-
-    for (const iframe of iframes) {
-      try {
-        const nestedDocument = iframe.contentDocument
-
-        if (!nestedDocument) {
-          continue
-        }
-
-        const rect = iframe.getBoundingClientRect()
-        visit(nestedDocument, topOffset + rect.top, true)
-      } catch {
-        // Ignore cross-origin frames.
-      }
-    }
-  }
-
-  visit(document, 0, false)
-  return documents
-}
-
-function collectAllCandidates(
+function collectAllCandidatesFromSnapshot(
+  sourceDocument: Document,
   mainRegionSelector: string,
   skuRegionSelector: string,
-  detailRegionSelector: string
+  detailRegionSelector: string,
+  baseUrl: string
 ) {
   const candidates: CandidateImage[] = []
 
-  for (const { doc, topOffset, fromIframe } of collectAccessibleDocuments()) {
-    for (const element of Array.from(doc.images)) {
-      const rawUrl = collectImageUrlFromElement(element)
-      const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl) : null
+  Array.from(sourceDocument.images).forEach((element, index) => {
+    const rawUrl = collectImageUrlFromElement(element)
+    const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl, baseUrl) : null
 
-      if (!sourceUrl || isIgnoredImageUrl(sourceUrl)) {
-        continue
-      }
-
-      const rect = element.getBoundingClientRect()
-      const width = element.naturalWidth || Math.round(rect.width) || element.width || undefined
-      const height =
-        element.naturalHeight || Math.round(rect.height) || element.height || undefined
-
-      if ((width ?? 0) < 60 && (height ?? 0) < 60) {
-        continue
-      }
-
-      candidates.push({
-        sourceUrl,
-        width,
-        height,
-        mimeType: undefined,
-        skuName: matchesRegion(element, skuRegionSelector) ? readSkuName(element) : null,
-        top: topOffset + rect.top,
-        area: (width ?? 0) * (height ?? 0),
-        inMainRegion: matchesRegion(element, mainRegionSelector),
-        inSkuRegion: matchesRegion(element, skuRegionSelector),
-        inDetailRegion: fromIframe || matchesRegion(element, detailRegionSelector),
-        fromIframe
-      })
+    if (!sourceUrl || isIgnoredImageUrl(sourceUrl)) {
+      return
     }
-  }
+
+    const { width, height } = getImageDimensions(element)
+
+    if ((width ?? 0) < 60 && (height ?? 0) < 60) {
+      return
+    }
+
+    candidates.push({
+      sourceUrl,
+      width,
+      height,
+      mimeType: undefined,
+      skuName: matchesRegion(element, skuRegionSelector) ? readSkuName(element) : null,
+      top: index,
+      area: (width ?? 0) * (height ?? 0),
+      inMainRegion: matchesRegion(element, mainRegionSelector),
+      inSkuRegion: matchesRegion(element, skuRegionSelector),
+      inDetailRegion: matchesRegion(element, detailRegionSelector),
+      fromIframe: false
+    })
+  })
 
   return candidates
 }
@@ -409,6 +404,60 @@ function isLikelyDetailImage(candidate: CandidateImage) {
   }
 
   return true
+}
+
+function extractDetailImagesByTextAnchor(limit: number, sourceDocument: Document, baseUrl: string) {
+  const keywords = ["图文详情", "商品详情", "宝贝详情"]
+  const titleElements = Array.from(
+    sourceDocument.querySelectorAll("p, span, div, h1, h2, h3, h4, h5, h6")
+  ).filter((element) => {
+    const text = element.textContent?.replace(/\s+/g, "").trim() ?? ""
+    return keywords.some((keyword) => text === keyword || text.includes(keyword))
+  })
+
+  const candidates: CandidateImage[] = []
+
+  for (const titleElement of titleElements) {
+    const detailContainer =
+      titleElement.closest("[class*='tabDetailItem']") ||
+      titleElement.parentElement?.querySelector("#imageTextInfo-content")?.parentElement ||
+      titleElement.parentElement
+
+    if (!detailContainer) {
+      continue
+    }
+
+    const targetImages = Array.from(
+      detailContainer.querySelectorAll(
+        "#imageTextInfo-content img, #imageTextInfo-container img, .descV8-container img, img[data-name='singleImage']"
+      )
+    ).filter((node): node is HTMLImageElement => node instanceof HTMLImageElement)
+
+    for (const image of targetImages) {
+      const rawUrl = collectImageUrlFromElement(image)
+      const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl, baseUrl) : null
+      if (!sourceUrl || isIgnoredImageUrl(sourceUrl)) {
+        continue
+      }
+
+      const { width, height } = getImageDimensions(image)
+      const candidate: CandidateImage = {
+        sourceUrl,
+        width,
+        height,
+        mimeType: undefined,
+        skuName: null
+      }
+
+      if (!isLikelyDetailImage(candidate)) {
+        continue
+      }
+
+      candidates.push(candidate)
+    }
+  }
+
+  return dedupeCandidates(candidates).slice(0, limit)
 }
 
 function excludeKnownProductImages(
@@ -542,6 +591,10 @@ function selectOtherCandidates(
 
 export async function extractProductFromPage(): Promise<ExtractedProduct> {
   await warmUpLazyContent()
+  const canonicalUrl = window.location.href
+  const pageHtml = document.documentElement?.outerHTML ?? null
+  const snapshotDocument = pageHtml ? parseSnapshotDocument(pageHtml) : null
+  const sourceDocument = snapshotDocument ?? document
 
   const mainSelectors = [
     "#J_UlThumb img",
@@ -601,10 +654,19 @@ export async function extractProductFromPage(): Promise<ExtractedProduct> {
     (candidate) => !candidate.inMainRegion && !candidate.inSkuRegion && !candidate.inDetailRegion
   )
 
-  const main = dedupeCandidates([...extractBySelectors(mainSelectors, 12), ...structuredMain]).slice(0, 12)
-  const allCandidates = collectAllCandidates(mainRegionSelector, skuRegionSelector, detailRegionSelector)
+  const main = dedupeCandidates([
+    ...extractBySelectors(mainSelectors, 12, sourceDocument, canonicalUrl),
+    ...structuredMain
+  ]).slice(0, 12)
+  const allCandidates = collectAllCandidatesFromSnapshot(
+    sourceDocument,
+    mainRegionSelector,
+    skuRegionSelector,
+    detailRegionSelector,
+    canonicalUrl
+  )
   const sku = dedupeCandidates([
-    ...extractBySelectors(skuSelectors, 60, {
+    ...extractBySelectors(skuSelectors, 60, sourceDocument, canonicalUrl, {
       skuNameFromElement: true
     }),
     ...structuredSku,
@@ -626,36 +688,51 @@ export async function extractProductFromPage(): Promise<ExtractedProduct> {
             !candidate.inDetailRegion &&
             (candidate.width ?? 0) >= 240 &&
             (candidate.height ?? 0) >= 240 &&
-            (candidate.top ?? 0) < window.innerHeight * 1.2
+            (candidate.top ?? 0) < 120
         )
       ).slice(0, 12)
-  const detailPrimary = extractBySelectors(detailPrimarySelectors, 60, {
-    predicate: isLikelyDetailImage
-  })
-  const detailFallback = extractBySelectors(detailFallbackSelectors, 60, {
-    predicate: isLikelyDetailImage
-  })
+  const detailPrimary = extractBySelectors(
+    detailPrimarySelectors,
+    60,
+    sourceDocument,
+    canonicalUrl,
+    {
+      predicate: isLikelyDetailImage
+    }
+  )
+  const detailFallback = extractBySelectors(
+    detailFallbackSelectors,
+    60,
+    sourceDocument,
+    canonicalUrl,
+    {
+      predicate: isLikelyDetailImage
+    }
+  )
+  const detailByTextAnchor = extractDetailImagesByTextAnchor(120, sourceDocument, canonicalUrl)
   const detailCandidates =
-    detailPrimary.length || detailFallback.length || structuredDetail.length
+    detailPrimary.length || detailFallback.length || detailByTextAnchor.length || structuredDetail.length
       ? [
+          ...detailByTextAnchor,
           ...detailPrimary,
           ...detailFallback,
           ...structuredDetail,
           ...selectDetailCandidates(allCandidates, [...fallbackMain, ...sku])
         ]
       : selectDetailCandidates(allCandidates, [...fallbackMain, ...sku])
-  const detail = dedupeCandidates(detailCandidates).slice(0, 30)
+  const detail = dedupeCandidates(detailCandidates).slice(0, 80)
   const other = dedupeCandidates([
     ...selectOtherCandidates(allCandidates, [...fallbackMain, ...sku, ...detail]),
     ...structuredOther
   ]).slice(0, 200)
 
-  const title = document.title?.replace(/\s+/g, " ").trim() || null
+  const title = sourceDocument.title?.replace(/\s+/g, " ").trim() || null
 
   return {
     title,
-    productId: getProductId(),
-    canonicalUrl: window.location.href,
+    productId: getProductId(canonicalUrl),
+    canonicalUrl,
+    pageHtml,
     images: {
       main: toManifestAssets("main", fallbackMain),
       sku: toManifestAssets("sku", sku),

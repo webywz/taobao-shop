@@ -1,6 +1,7 @@
 import json
 import uuid
 import datetime
+from pathlib import Path
 from fastapi import HTTPException
 from app.database import database, create_id, plus_days, detect_platform
 from app.storage import oss_storage
@@ -435,6 +436,45 @@ class DatabaseStore:
             raise HTTPException(status_code=404, detail="task not found")
         return await self.hydrate_task(row)
 
+    def _save_debug_page_snapshot(self, task_id: str, input_data: dict):
+        page_html = input_data.get("debugPageHtml")
+        page_mhtml = input_data.get("debugPageMhtml")
+        has_html = isinstance(page_html, str) and bool(page_html.strip())
+        has_mhtml = isinstance(page_mhtml, str) and bool(page_mhtml.strip())
+        if not has_html and not has_mhtml:
+            return None
+
+        debug_dir = Path(__file__).resolve().parent.parent / "debug_pages"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        html_path = debug_dir / f"{task_id}_{timestamp}.html"
+        mhtml_path = debug_dir / f"{task_id}_{timestamp}.mhtml"
+        meta_path = debug_dir / f"{task_id}_{timestamp}.json"
+
+        if has_html:
+            html_path.write_text(page_html, encoding="utf-8")
+        if has_mhtml:
+            mhtml_path.write_text(page_mhtml, encoding="utf-8")
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "taskId": task_id,
+                    "debugPageUrl": input_data.get("debugPageUrl"),
+                    "debugPageTruncated": bool(input_data.get("debugPageTruncated")),
+                    "debugPageMhtmlTruncated": bool(input_data.get("debugPageMhtmlTruncated")),
+                    "savedHtmlPath": str(html_path) if has_html else None,
+                    "savedMhtmlPath": str(mhtml_path) if has_mhtml else None,
+                    "savedAt": _to_iso(datetime.datetime.now(datetime.timezone.utc))
+                },
+                ensure_ascii=False,
+                indent=2
+            ),
+            encoding="utf-8"
+        )
+
+        return str(meta_path)
+
     async def submit_result(self, task_id: str, input_data: dict, authorization: str | None):
         device = await self.get_device_by_token(authorization)
         await self._assert_task_owned_by_device(task_id, input_data["taskToken"], device["deviceId"])
@@ -488,6 +528,13 @@ class DatabaseStore:
                     "tid": task_id
                 }
             )
+
+        try:
+            saved_path = self._save_debug_page_snapshot(task_id, input_data)
+            if saved_path:
+                print(f"debug page saved: {saved_path}")
+        except Exception as error:
+            print(f"failed to save debug page for {task_id}: {error}")
 
         return await self._get_task_by_id_without_auth(task_id)
 
