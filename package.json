@@ -9,7 +9,10 @@
     "dev:web": "npm run dev --workspace @tb-pdd-image/web",
     "dev:api": "npm run dev --workspace @tb-pdd-image/api",
     "dev:extension": "npm run dev --workspace @tb-pdd-image/extension",
+    "dev:desktop:web": "npm run dev --workspace @tb-pdd-image/desktop",
+    "dev:desktop": "npm run tauri dev --workspace @tb-pdd-image/desktop",
     "build:web": "npm run build --workspace @tb-pdd-image/web",
+    "build:desktop": "npm run build --workspace @tb-pdd-image/desktop",
     "build:extension": "npm run build --workspace @tb-pdd-image/extension",
     "package:extension": "sh scripts/package-extension.sh"
   }
