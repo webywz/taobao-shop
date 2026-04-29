@@ -20,8 +20,8 @@ const allAssets = computed(() => {
   if (!task.value || !task.value.assets) return []
   return [
     ...(task.value.assets.main || []),
-    ...(task.value.assets.detail || []),
-    ...(task.value.assets.other || [])
+    ...(task.value.assets.sku || []),
+    ...(task.value.assets.detail || [])
   ]
 })
 
@@ -201,12 +201,12 @@ onUnmounted(() => {
                 <div class="text-xs text-gray-500 mt-1">主图</div>
               </div>
               <div class="bg-gray-50 px-4 py-3 rounded-lg flex-1 text-center">
-                <div class="text-2xl font-semibold text-gray-900">{{ task.counts?.detail || 0 }}</div>
-                <div class="text-xs text-gray-500 mt-1">详情图</div>
+                <div class="text-2xl font-semibold text-gray-900">{{ task.counts?.sku || 0 }}</div>
+                <div class="text-xs text-gray-500 mt-1">颜色图</div>
               </div>
               <div class="bg-gray-50 px-4 py-3 rounded-lg flex-1 text-center">
-                <div class="text-2xl font-semibold text-gray-900">{{ task.counts?.other || 0 }}</div>
-                <div class="text-xs text-gray-500 mt-1">其他图</div>
+                <div class="text-2xl font-semibold text-gray-900">{{ task.counts?.detail || 0 }}</div>
+                <div class="text-xs text-gray-500 mt-1">详情图</div>
               </div>
             </div>
           </div>
@@ -225,16 +225,16 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div v-for="type in ['main', 'detail', 'other']" :key="type" class="bg-white shadow sm:rounded-lg overflow-hidden">
+      <div v-for="type in ['main', 'sku', 'detail']" :key="type" class="bg-white shadow sm:rounded-lg overflow-hidden">
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
           <h3 class="text-lg leading-6 font-medium text-gray-900">
-            {{ type === 'main' ? '主图' : type === 'detail' ? '详情图' : '其他图' }} 
+            {{ type === 'main' ? '主图' : type === 'sku' ? '颜色图' : '详情图' }} 
             <span class="text-sm text-gray-500 ml-2">({{ task.assets?.[type as keyof typeof task.assets]?.length || 0 }})</span>
           </h3>
         </div>
         <div class="p-4">
           <div v-if="!task.assets?.[type as keyof typeof task.assets]?.length" class="text-center py-8 text-sm text-gray-500">
-            暂无{{ type === 'main' ? '主图' : type === 'detail' ? '详情图' : '其他图' }}
+            暂无{{ type === 'main' ? '主图' : type === 'sku' ? '颜色图' : '详情图' }}
           </div>
           <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
             <div v-for="asset in task.assets[type as keyof typeof task.assets]" :key="asset.assetId" class="border border-gray-200 rounded-lg overflow-hidden flex flex-col">

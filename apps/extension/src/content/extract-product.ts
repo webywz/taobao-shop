@@ -14,6 +14,7 @@ type CandidateImage = {
   height?: number
   mimeType?: string
   skuName?: string | null
+  skuOptionId?: string
   top?: number
   area?: number
   inMainRegion?: boolean
@@ -151,6 +152,16 @@ function isIgnoredImageUrl(sourceUrl: string) {
 }
 
 function isIgnoredImageUrlForDetail(sourceUrl: string) {
+  return (
+    sourceUrl.startsWith("data:") ||
+    sourceUrl.startsWith("blob:") ||
+    /\/s\.gif(?:$|\?)/i.test(sourceUrl) ||
+    /\.(svg)(?:$|\?)/i.test(sourceUrl) ||
+    /(sprite|icon|logo|avatar|coupon|badge|qr|qrcode)/i.test(sourceUrl)
+  )
+}
+
+function isIgnoredImageUrlForSkuColor(sourceUrl: string) {
   return (
     sourceUrl.startsWith("data:") ||
     sourceUrl.startsWith("blob:") ||
@@ -361,6 +372,317 @@ function extractDetailBySelectors(
   return dedupeCandidates(candidates).slice(0, limit)
 }
 
+function readSkuColorNameFromItem(item: Element) {
+  const normalizeName = (value: string | null | undefined) => {
+    const normalized = value?.replace(/\s+/g, " ").trim()
+    return normalized ? normalized.slice(0, 100) : null
+  }
+
+  const labelElement =
+    item.querySelector("[class*='valueItemText--']") ||
+    item.querySelector("[class*='valueItemText']") ||
+    item.querySelector("span[title]") ||
+    item.querySelector("span") ||
+    item
+
+  const directName = normalizeName(labelElement.getAttribute("title") || labelElement.textContent)
+  if (directName) {
+    return directName
+  }
+
+  const attrCandidates = [
+    item.getAttribute("title"),
+    item.getAttribute("aria-label"),
+    item.getAttribute("data-value"),
+    item.getAttribute("data-sku"),
+    item.getAttribute("data-name"),
+    item.getAttribute("data-label")
+  ]
+
+  for (const candidate of attrCandidates) {
+    const normalized = normalizeName(candidate)
+    if (normalized) {
+      return normalized
+    }
+  }
+
+  const cloned = item.cloneNode(true) as Element
+  cloned.querySelectorAll("img, picture, svg, i").forEach((node) => node.remove())
+  const textOnly = normalizeName(cloned.textContent)
+  if (textOnly) {
+    return textOnly
+  }
+
+  const vid = item.getAttribute("data-vid")
+  return vid ? `SKU-${vid}` : null
+}
+
+function isColorSkuSection(container: Element) {
+  const label =
+    container.querySelector("[class*='ItemLabel'] span") ||
+    container.querySelector("[class*='labelWrap'] span[title]") ||
+    container.querySelector("[class*='labelWrap'] span")
+
+  const text = (
+    label?.getAttribute("title") ||
+    label?.textContent ||
+    container.getAttribute("data-property-name") ||
+    ""
+  )
+    .replace(/\s+/g, "")
+    .trim()
+
+  return text.includes("颜色分类") || text === "颜色" || text.includes("颜色")
+}
+
+function isSkuColorPlaceholderUrl(sourceUrl: string) {
+  return /-tps-2-2\./i.test(sourceUrl) || /(?:^|[\/_])2x2(?:[._-]|$)/i.test(sourceUrl)
+}
+
+function getMainImageCandidate(sourceDocument: Document, baseUrl: string) {
+  const mainImageSelectors = [
+    "[class*='mainPic'] img",
+    "[class*='main-pic'] img",
+    "[class*='imgWrap'] img",
+    "[class*='preview'] img",
+    "#J_ImgBooth",
+    "#J_BigImg",
+    "[class*='gallery'] img"
+  ]
+
+  const images = mainImageSelectors.flatMap((selector) =>
+    Array.from(sourceDocument.querySelectorAll(selector)).filter(
+      (node): node is HTMLImageElement => node instanceof HTMLImageElement
+    )
+  )
+
+  let best: CandidateImage | null = null
+  let bestArea = 0
+
+  for (const image of images) {
+    const rawUrl = collectImageUrlFromElement(image)
+    const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl, baseUrl) : null
+    if (!sourceUrl || isIgnoredImageUrl(sourceUrl) || isSkuColorPlaceholderUrl(sourceUrl)) {
+      continue
+    }
+
+    const { width, height } = getImageDimensions(image)
+    const area = (width ?? 0) * (height ?? 0)
+    if (!best || area > bestArea) {
+      best = {
+        sourceUrl,
+        width,
+        height,
+        mimeType: undefined,
+        skuName: null
+      }
+      bestArea = area
+    }
+  }
+
+  return best
+}
+
+async function extractSkuColorImages(limit: number, sourceDocument: Document, baseUrl: string): Promise<CandidateImage[]> {
+  const sectionSelectors = [
+    "#skuOptionsArea [class*='skuItem']",
+    "[class*='skuWrapper'] [class*='skuItem']",
+    "[class*='skuItem']"
+  ]
+
+  const sectionSet = new Set<Element>()
+  const orderedSections: Element[] = []
+
+  for (const selector of sectionSelectors) {
+    for (const node of Array.from(sourceDocument.querySelectorAll(selector))) {
+      if (!sectionSet.has(node)) {
+        sectionSet.add(node)
+        orderedSections.push(node)
+      }
+    }
+  }
+
+  const colorSections = orderedSections.filter(isColorSkuSection)
+  const candidates: CandidateImage[] = []
+  const fallbackItems: Array<{
+    item: Element
+    skuName: string | null
+    skuOptionId?: string
+  }> = []
+
+  for (const section of colorSections) {
+    const items = Array.from(
+      section.querySelectorAll(
+        "[class*='skuValueWrap'] [class*='valueItem--'], [class*='contentWrap'] [class*='valueItem--'], [class*='skuValueWrap'] div[data-vid]"
+      )
+    )
+
+    const seenItem = new Set<Element>()
+    const orderedItems = items.filter((item) => {
+      if (seenItem.has(item)) {
+        return false
+      }
+      seenItem.add(item)
+      return true
+    })
+
+    const firstEnabledItem = orderedItems.find(
+      (item) => item.getAttribute("data-disabled") !== "true"
+    )
+    if (firstEnabledItem instanceof HTMLElement) {
+      // Some Taobao pages keep the first color in an unstable state until toggled twice.
+      firstEnabledItem.click()
+      await sleep(120)
+      firstEnabledItem.click()
+      await sleep(120)
+    }
+
+    for (const item of orderedItems) {
+      const isDisabled = item.getAttribute("data-disabled") === "true"
+      if (isDisabled) {
+        continue
+      }
+
+      const element = item.querySelector("img")
+      const skuName = readSkuColorNameFromItem(item)
+      const skuOptionId = item.getAttribute("data-vid") || undefined
+
+      if (!(element instanceof HTMLImageElement)) {
+        fallbackItems.push({
+          item,
+          skuName,
+          skuOptionId
+        })
+        continue
+      }
+
+      const rawUrl = collectImageUrlFromElement(element)
+      const sourceUrl = rawUrl ? normalizeImageUrl(rawUrl, baseUrl) : null
+
+      if (!sourceUrl || isIgnoredImageUrlForSkuColor(sourceUrl)) {
+        fallbackItems.push({
+          item,
+          skuName,
+          skuOptionId
+        })
+        continue
+      }
+
+      const { width, height } = getImageDimensions(element)
+      const hasKnownSize = (width ?? 0) > 0 || (height ?? 0) > 0
+
+      if (hasKnownSize && (width ?? 0) < 20 && (height ?? 0) < 20) {
+        fallbackItems.push({
+          item,
+          skuName,
+          skuOptionId
+        })
+        continue
+      }
+
+      if (isSkuColorPlaceholderUrl(sourceUrl)) {
+        fallbackItems.push({
+          item,
+          skuName,
+          skuOptionId
+        })
+        continue
+      }
+
+      candidates.push({
+        sourceUrl,
+        width,
+        height,
+        mimeType: undefined,
+        skuName,
+        skuOptionId
+      })
+    }
+  }
+
+  for (const { item, skuName, skuOptionId } of fallbackItems) {
+    ;(item as HTMLElement).click()
+    await sleep(120)
+
+    let recovered: CandidateImage | null = null
+
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const itemImage = item.querySelector("img")
+      if (itemImage instanceof HTMLImageElement) {
+        const itemRawUrl = collectImageUrlFromElement(itemImage)
+        const itemSourceUrl = itemRawUrl ? normalizeImageUrl(itemRawUrl, baseUrl) : null
+
+        if (
+          itemSourceUrl &&
+          !isIgnoredImageUrlForSkuColor(itemSourceUrl) &&
+          !isSkuColorPlaceholderUrl(itemSourceUrl)
+        ) {
+          const { width, height } = getImageDimensions(itemImage)
+          recovered = {
+            sourceUrl: itemSourceUrl,
+            width,
+            height,
+            mimeType: undefined,
+            skuName,
+            skuOptionId
+          }
+          break
+        }
+      }
+
+      const mainCandidate = getMainImageCandidate(sourceDocument, baseUrl)
+      if (mainCandidate) {
+        recovered = {
+          ...mainCandidate,
+          skuName,
+          skuOptionId
+        }
+        break
+      }
+
+      await sleep(100)
+    }
+
+    if (recovered) {
+      candidates.push(recovered)
+    }
+  }
+
+  const selected = new Map<string, CandidateImage>()
+
+  for (const candidate of candidates) {
+    const skuOptionKey = candidate.skuOptionId?.trim()
+    const skuKey = candidate.skuName?.replace(/\s+/g, " ").trim()
+    const key = skuOptionKey
+      ? `vid:${skuOptionKey}`
+      : skuKey && skuKey.length > 0
+        ? `sku:${skuKey}`
+        : `url:${buildDedupeKey(candidate.sourceUrl)}`
+
+    if (!selected.has(key)) {
+      selected.set(key, candidate)
+      continue
+    }
+
+    const existing = selected.get(key)!
+    const existingIsFallbackName = /^SKU-\d+$/i.test(existing.skuName ?? "")
+    const nextIsFallbackName = /^SKU-\d+$/i.test(candidate.skuName ?? "")
+    const existingArea = (existing.width ?? 0) * (existing.height ?? 0)
+    const nextArea = (candidate.width ?? 0) * (candidate.height ?? 0)
+
+    const shouldReplaceByNameQuality =
+      existingIsFallbackName && !nextIsFallbackName && (candidate.skuName?.length ?? 0) > 0
+    const shouldReplaceByArea =
+      nextArea > existingArea && (!nextIsFallbackName || existingIsFallbackName)
+
+    if (shouldReplaceByNameQuality || shouldReplaceByArea) {
+      selected.set(key, candidate)
+    }
+  }
+
+  return Array.from(selected.values()).slice(0, limit)
+}
+
 function getImageStabilitySnapshot() {
   const images = Array.from(document.images)
 
@@ -525,14 +847,6 @@ export async function extractProductFromPage(): Promise<ExtractedProduct> {
     "[class*='carousel'] img"
   ]
 
-  const skuSelectors = [
-    "#skuOptionsArea [class*='valueItemImgWrap'] img",
-    "#skuOptionsArea [class*='valueItem'] img",
-    "#skuOptionsArea img",
-    "[id*='skuOptions'] [class*='valueItemImgWrap'] img",
-    "[id*='skuOptions'] [class*='valueItem'] img"
-  ]
-
   const detailPrimarySelectors = [
     "#description img",
     "#J_DivItemDesc img",
@@ -552,11 +866,7 @@ export async function extractProductFromPage(): Promise<ExtractedProduct> {
     allowUnknownSize: true,
     minEdge: 20
   })
-  const sku = extractBySelectors(skuSelectors, 60, sourceDocument, canonicalUrl, {
-    skuNameFromElement: true,
-    allowUnknownSize: true,
-    minEdge: 20
-  })
+  const sku = await extractSkuColorImages(60, document, canonicalUrl)
   const detailPrimary = extractDetailBySelectors(
     detailPrimarySelectors,
     60,
