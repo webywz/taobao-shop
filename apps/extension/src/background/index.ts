@@ -99,11 +99,6 @@ type ExtractedTaskPayload = {
   }
 }
 
-type ExtractionPageCapture = {
-  extracted: ExtractedTaskPayload
-  pageMhtml: string | null
-}
-
 type DownloadedAsset = ExtractedAsset & {
   clientAssetId: string
   blob: Blob
@@ -312,28 +307,6 @@ async function runPageExtraction(task: QueuedTask) {
 
     let lastPayload: ExtractedTaskPayload | null = null
 
-    const capturePageMhtml = async () => {
-      return new Promise<string | null>((resolve) => {
-        chrome.pageCapture.saveAsMHTML(
-          {
-            tabId: tab.id as number
-          },
-          async (mhtmlBlob) => {
-            if (chrome.runtime.lastError || !mhtmlBlob) {
-              resolve(null)
-              return
-            }
-
-            try {
-              resolve(await mhtmlBlob.text())
-            } catch {
-              resolve(null)
-            }
-          }
-        )
-      })
-    }
-
     for (let attempt = 0; attempt < 3; attempt += 1) {
       lastPayload = await extractFromTab(tab.id)
 
@@ -341,10 +314,7 @@ async function runPageExtraction(task: QueuedTask) {
       const mainCount = lastPayload.images.main.length
 
       if (detailCount > 0 || attempt === 2 || mainCount === 0) {
-        return {
-          extracted: lastPayload,
-          pageMhtml: await capturePageMhtml()
-        } satisfies ExtractionPageCapture
+        return lastPayload
       }
 
       await sleep(2500)
@@ -354,10 +324,7 @@ async function runPageExtraction(task: QueuedTask) {
       throw new Error("extractor unavailable")
     }
 
-    return {
-      extracted: lastPayload,
-      pageMhtml: await capturePageMhtml()
-    } satisfies ExtractionPageCapture
+    return lastPayload
   } finally {
     if (shouldClose) {
       await removeTab(tab.id)
@@ -481,27 +448,7 @@ async function executeTask(task: QueuedTask, deviceId: string, deviceToken: stri
     "心跳上报失败"
   )
 
-  const extraction = await runPageExtraction(task)
-  const extracted = extraction.extracted
-  // Keep full runtime DOM HTML by default so downstream parsing can rely on one source of truth.
-  const maxDebugHtmlLength: number | null = null
-  // Keep full MHTML by default to avoid corrupting multipart boundaries.
-  // If we need a cap later, set a number here and truncation metadata will still work.
-  const maxDebugMhtmlLength: number | null = null
-  const rawPageHtml = extracted.pageHtml ?? null
-  const debugPageHtml =
-    rawPageHtml &&
-    typeof maxDebugHtmlLength === "number" &&
-    rawPageHtml.length > maxDebugHtmlLength
-      ? rawPageHtml.slice(0, maxDebugHtmlLength)
-      : rawPageHtml
-  const rawPageMhtml = extraction.pageMhtml ?? null
-  const debugPageMhtml =
-    rawPageMhtml &&
-    typeof maxDebugMhtmlLength === "number" &&
-    rawPageMhtml.length > maxDebugMhtmlLength
-      ? rawPageMhtml.slice(0, maxDebugMhtmlLength)
-      : rawPageMhtml
+  const extracted = await runPageExtraction(task)
   const downloadedAssets = await collectDownloadedAssets(extracted)
 
   if (!downloadedAssets.length) {
@@ -620,19 +567,6 @@ async function executeTask(task: QueuedTask, deviceId: string, deviceToken: stri
         productId: extracted.productId,
         canonicalUrl: extracted.canonicalUrl,
         extractorVersion: EXTRACTOR_VERSION,
-        debugPageHtml,
-        debugPageUrl: extracted.canonicalUrl || task.sourceUrl,
-        debugPageTruncated: Boolean(
-          rawPageHtml &&
-          typeof maxDebugHtmlLength === "number" &&
-          rawPageHtml.length > maxDebugHtmlLength
-        ),
-        debugPageMhtml,
-        debugPageMhtmlTruncated: Boolean(
-          rawPageMhtml &&
-          typeof maxDebugMhtmlLength === "number" &&
-          rawPageMhtml.length > maxDebugMhtmlLength
-        ),
         images: {
           main: buildUploadedImages("main"),
           sku: buildUploadedImages("sku"),
