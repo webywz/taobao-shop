@@ -1,7 +1,16 @@
 <script setup lang="ts">
-import { useRoute } from 'vue-router'
+import { computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { clearStoredAdminToken } from '../lib/api'
 
 const route = useRoute()
+const router = useRouter()
+const isLoginPage = computed(() => route.path === '/login')
+
+function handleLogout() {
+  clearStoredAdminToken()
+  router.replace('/login')
+}
 </script>
 
 <template>
@@ -12,22 +21,15 @@ const route = useRoute()
           <div class="flex">
             <div class="flex-shrink-0 flex items-center gap-2">
               <span class="text-xl">⚡</span>
-              <span class="text-lg font-bold text-gray-900">ImageFlow</span>
+              <span class="text-lg font-bold text-gray-900">ImageFlow Admin</span>
             </div>
-            <nav class="hidden sm:ml-8 sm:flex sm:space-x-8">
+            <nav v-if="!isLoginPage" class="hidden sm:ml-8 sm:flex sm:space-x-8">
               <router-link
-                to="/"
+                to="/admin/codes"
                 class="inline-flex items-center px-1 pt-1 text-sm font-medium"
-                :class="route.path === '/' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                :class="route.path.startsWith('/admin/codes') ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700 hover:border-gray-300'"
               >
-                <span class="mr-1">🏠</span> 首页
-              </router-link>
-              <router-link
-                to="/activate"
-                class="inline-flex items-center px-1 pt-1 text-sm font-medium"
-                :class="route.path.startsWith('/activate') ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700 hover:border-gray-300'"
-              >
-                <span class="mr-1">🔑</span> 激活
+                <span class="mr-1">🗝️</span> 卡密管理
               </router-link>
               <router-link
                 to="/install-plugin"
@@ -50,14 +52,15 @@ const route = useRoute()
               >
                 <span class="mr-1">📋</span> 历史
               </router-link>
-              <router-link
-                to="/help"
-                class="inline-flex items-center px-1 pt-1 text-sm font-medium"
-                :class="route.path.startsWith('/help') ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700 hover:border-gray-300'"
-              >
-                <span class="mr-1">💡</span> 帮助
-              </router-link>
             </nav>
+          </div>
+          <div v-if="!isLoginPage" class="flex items-center">
+            <button
+              class="text-sm text-gray-500 hover:text-gray-700"
+              @click="handleLogout"
+            >
+              退出登录
+            </button>
           </div>
         </div>
       </div>

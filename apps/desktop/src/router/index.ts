@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { getStoredLicenseToken } from '../lib/api'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -32,6 +33,16 @@ const router = createRouter({
       redirect: '/activate'
     }
   ]
+})
+
+router.beforeEach((to) => {
+  const hasLicense = Boolean(getStoredLicenseToken())
+
+  if (to.path.startsWith('/activate') && hasLicense) {
+    return '/extract'
+  }
+
+  return true
 })
 
 export default router

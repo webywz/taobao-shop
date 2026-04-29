@@ -1,12 +1,22 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { getStoredAdminToken } from '../lib/api'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
       path: '/',
-      name: 'home',
-      component: () => import('../views/HomeView.vue')
+      redirect: '/admin/codes'
+    },
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('../views/LoginView.vue')
+    },
+    {
+      path: '/admin/codes',
+      name: 'admin-codes',
+      component: () => import('../views/AdminCodesView.vue')
     },
     {
       path: '/extract',
@@ -39,6 +49,16 @@ const router = createRouter({
       component: () => import('../views/InstallPluginView.vue')
     }
   ]
+})
+
+router.beforeEach((to) => {
+  if (to.path === '/login') {
+    return true
+  }
+  if (!getStoredAdminToken()) {
+    return '/login'
+  }
+  return true
 })
 
 export default router

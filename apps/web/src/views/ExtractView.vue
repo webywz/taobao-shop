@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { createTask, getStoredLicenseToken } from '../lib/api'
+import { createTask } from '../lib/api'
 import { getPluginStatus, pingPlugin, triggerPluginPoll } from '../lib/plugin-bridge'
 
 const router = useRouter()
@@ -11,12 +11,6 @@ const message = ref<string | null>(null)
 const loading = ref(false)
 
 async function handleCreate() {
-  if (!getStoredLicenseToken()) {
-    message.value = "请先完成卡密激活"
-    ElMessage.warning(message.value)
-    return
-  }
-
   const normalizedUrl = sourceUrl.value.trim()
 
   if (!normalizedUrl) {

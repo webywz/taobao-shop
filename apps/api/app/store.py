@@ -1,7 +1,8 @@
-import uuid
 import datetime
+import secrets
 from fastapi import HTTPException
-from app.database import database, create_id, plus_days, detect_platform
+from app.database import database, create_id, plus_days, detect_platform, hash_activation_code
+from app.admin_auth import verify_admin_token
 from app.storage import oss_storage
 
 def _to_iso(dt):
@@ -24,16 +25,181 @@ class DatabaseStore:
             raise HTTPException(status_code=401, detail="missing bearer token")
         return authorization[len("Bearer "):].strip()
 
-    async def redeem_license(self, activation_code: str):
-        existing_code = await self.db.fetch_one(
-            "select license_id from activation_codes where code = :code",
-            {"code": activation_code}
+    async def _get_or_create_admin_license(self):
+        row = await self.db.fetch_one(
+            "select id, token, duration_days, expires_at from licenses where id = :id",
+            {"id": "lic_admin_default"}
+        )
+        if row:
+            return {
+                "licenseId": row["id"],
+                "licenseToken": row["token"],
+                "durationDays": row["duration_days"],
+                "expiresAt": _to_iso(row["expires_at"])
+            }
+
+        license_id = "lic_admin_default"
+        license_token = "ltok_admin_default"
+        expires_at = plus_days(36500)
+        await self.db.execute(
+            """
+            insert into licenses (id, token, duration_days, expires_at)
+            values (:id, :token, :duration_days, :expires_at)
+            """,
+            {
+                "id": license_id,
+                "token": license_token,
+                "duration_days": 36500,
+                "expires_at": expires_at
+            }
+        )
+        return {
+            "licenseId": license_id,
+            "licenseToken": license_token,
+            "durationDays": 36500,
+            "expiresAt": _to_iso(expires_at)
+        }
+
+    async def _resolve_management_license(self, authorization: str | None, admin_token: str | None):
+        if admin_token:
+            verify_admin_token(admin_token)
+            return await self._get_or_create_admin_license()
+        if authorization and authorization.startswith("Bearer "):
+            return await self.get_license_by_token(self._get_bearer_token(authorization))
+        raise HTTPException(status_code=401, detail="authentication required")
+
+    def _normalize_activation_code(self, activation_code: str) -> str:
+        normalized = (activation_code or "").strip().upper()
+        if not normalized:
+            raise HTTPException(status_code=400, detail="activation code is required")
+        return normalized
+
+    def _generate_activation_code(self) -> str:
+        # Keep characters readable and avoid confusing 0/O and 1/I
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        blocks = []
+        for _ in range(4):
+            blocks.append("".join(secrets.choice(alphabet) for _ in range(4)))
+        return "-".join(blocks)
+
+    def _is_expired(self, expires_at):
+        if not expires_at:
+            return False
+        if isinstance(expires_at, datetime.datetime):
+            compared = expires_at
+        else:
+            compared = datetime.datetime.fromisoformat(str(expires_at).replace(" ", "T"))
+        if compared.tzinfo is None:
+            compared = compared.replace(tzinfo=datetime.timezone.utc)
+        return compared <= datetime.datetime.now(datetime.timezone.utc)
+
+    async def generate_activation_codes(self, count: int, duration_days: int = 30, batch_no: str | None = None):
+        if count < 1 or count > 1000:
+            raise HTTPException(status_code=400, detail="count must be between 1 and 1000")
+        if duration_days < 1 or duration_days > 3650:
+            raise HTTPException(status_code=400, detail="duration_days must be between 1 and 3650")
+
+        normalized_batch = (batch_no or "").strip() or f"batch_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+        generated_items = []
+        used_hashes = set()
+        attempts = 0
+        max_attempts = count * 20
+
+        async with self.db.transaction():
+            while len(generated_items) < count:
+                attempts += 1
+                if attempts > max_attempts:
+                    raise HTTPException(status_code=500, detail="failed to generate unique activation codes")
+
+                code = self._generate_activation_code()
+                code_hash = hash_activation_code(code)
+                if code_hash in used_hashes:
+                    continue
+
+                existing = await self.db.fetch_one(
+                    "select code_hash from activation_codes where code_hash = :code_hash",
+                    {"code_hash": code_hash}
+                )
+                if existing:
+                    continue
+
+                await self.db.execute(
+                    """
+                    insert into activation_codes (code, code_hash, duration_days, status, batch_no)
+                    values (:code, :code_hash, :duration_days, 'active', :batch_no)
+                    """,
+                    {
+                        "code": code,
+                        "code_hash": code_hash,
+                        "duration_days": duration_days,
+                        "batch_no": normalized_batch
+                    }
+                )
+                used_hashes.add(code_hash)
+                generated_items.append({
+                    "code": code,
+                    "durationDays": duration_days,
+                    "status": "active",
+                    "batchNo": normalized_batch
+                })
+
+        return {
+            "batchNo": normalized_batch,
+            "count": len(generated_items),
+            "items": generated_items
+        }
+
+    async def list_activation_codes(self, limit: int = 200):
+        if limit < 1 or limit > 1000:
+            raise HTTPException(status_code=400, detail="limit must be between 1 and 1000")
+
+        rows = await self.db.fetch_all(
+            """
+            select code, duration_days, status, batch_no, redeemed_at, created_at, expires_at
+            from activation_codes
+            order by created_at desc
+            limit :limit
+            """,
+            {"limit": limit}
         )
 
-        if existing_code and existing_code["license_id"]:
+        return {
+            "items": [
+                {
+                    "code": row["code"],
+                    "durationDays": row["duration_days"],
+                    "status": row["status"],
+                    "batchNo": row["batch_no"],
+                    "redeemedAt": _to_iso(row["redeemed_at"]),
+                    "createdAt": _to_iso(row["created_at"]),
+                    "expiresAt": _to_iso(row["expires_at"])
+                }
+                for row in rows
+            ]
+        }
+
+    async def redeem_license(self, activation_code: str):
+        normalized_code = self._normalize_activation_code(activation_code)
+        code_hash = hash_activation_code(normalized_code)
+        existing_code = await self.db.fetch_one(
+            """
+            select code, duration_days, status, license_id, expires_at
+            from activation_codes
+            where code_hash = :code_hash
+            """,
+            {"code_hash": code_hash}
+        )
+
+        if not existing_code:
+            raise HTTPException(status_code=401, detail="invalid activation code")
+
+        if existing_code["status"] == "redeemed" or existing_code["license_id"]:
             raise HTTPException(status_code=401, detail="activation code already redeemed")
 
-        duration_days = 30
+        if self._is_expired(existing_code["expires_at"]):
+            raise HTTPException(status_code=401, detail="activation code expired")
+
+        duration_days = int(existing_code["duration_days"] or 30)
         license_id = create_id("lic")
         license_token = create_id("ltok")
         expires_at = plus_days(duration_days)
@@ -54,12 +220,13 @@ class DatabaseStore:
 
             await self.db.execute(
                 """
-                insert into activation_codes (code, license_id, redeemed_at)
-                values (:code, :license_id, current_timestamp)
-                on conflict (code)
-                do update set license_id = excluded.license_id, redeemed_at = excluded.redeemed_at
+                update activation_codes
+                set license_id = :license_id,
+                    redeemed_at = current_timestamp,
+                    status = 'redeemed'
+                where code_hash = :code_hash
                 """,
-                {"code": activation_code, "license_id": license_id}
+                {"code_hash": code_hash, "license_id": license_id}
             )
 
         return {
@@ -67,7 +234,7 @@ class DatabaseStore:
             "licenseToken": license_token,
             "durationDays": duration_days,
             "expiresAt": _to_iso(expires_at),
-            "activationCode": activation_code
+            "activationCode": existing_code["code"]
         }
 
     async def get_license_by_token(self, token: str):
@@ -153,7 +320,7 @@ class DatabaseStore:
 
     async def bind_license(self, device_id: str, input_data: dict):
         license_info = await self.get_license_by_token(input_data["licenseToken"])
-        result = await self.db.execute(
+        await self.db.execute(
             "update devices set license_id = :lid where id = :did",
             {"lid": license_info["licenseId"], "did": device_id}
         )
@@ -198,8 +365,8 @@ class DatabaseStore:
             "receivedAt": _to_iso(datetime.datetime.now(datetime.timezone.utc))
         }
 
-    async def create_task(self, input_data: dict, authorization: str | None):
-        license_info = await self.get_license_by_token(self._get_bearer_token(authorization))
+    async def create_task(self, input_data: dict, authorization: str | None, admin_token: str | None = None):
+        license_info = await self._resolve_management_license(authorization, admin_token)
         platform = detect_platform(input_data["sourceUrl"])
         task_id = create_id("task")
         task_token = create_id("ttok")
@@ -311,8 +478,8 @@ class DatabaseStore:
             "completedAt": _to_iso(row["completed_at"])
         }
 
-    async def list_tasks(self, authorization: str | None):
-        license_info = await self.get_license_by_token(self._get_bearer_token(authorization))
+    async def list_tasks(self, authorization: str | None, admin_token: str | None = None):
+        license_info = await self._resolve_management_license(authorization, admin_token)
         rows = await self.db.fetch_all(
             """
             select id, platform, status, source_url, canonical_url, title, product_id, error_code,
@@ -325,8 +492,8 @@ class DatabaseStore:
         )
         return [await self.hydrate_task(row) for row in rows]
 
-    async def get_task(self, task_id: str, authorization: str | None):
-        license_info = await self.get_license_by_token(self._get_bearer_token(authorization))
+    async def get_task(self, task_id: str, authorization: str | None, admin_token: str | None = None):
+        license_info = await self._resolve_management_license(authorization, admin_token)
         row = await self.db.fetch_one(
             """
             select id, platform, status, source_url, canonical_url, title, product_id, error_code,
@@ -512,8 +679,8 @@ class DatabaseStore:
 
         return await self._get_task_by_id_without_auth(task_id)
 
-    async def request_archive(self, task_id: str, input_data: dict, authorization: str | None):
-        await self.get_task(task_id, authorization)
+    async def request_archive(self, task_id: str, input_data: dict, authorization: str | None, admin_token: str | None = None):
+        await self.get_task(task_id, authorization, admin_token)
         retention_days = input_data.get("retentionDays", 7)
         archive_id = create_id("arc")
         # Fake download URL since we don't have the zip generation logic yet
@@ -542,10 +709,10 @@ class DatabaseStore:
             }
         )
 
-        return await self.get_archive(task_id, authorization)
+        return await self.get_archive(task_id, authorization, admin_token)
 
-    async def get_archive(self, task_id: str, authorization: str | None):
-        await self.get_task(task_id, authorization)
+    async def get_archive(self, task_id: str, authorization: str | None, admin_token: str | None = None):
+        await self.get_task(task_id, authorization, admin_token)
 
         row = await self.db.fetch_one(
             "select archive_id, status, retention_days, download_url, file_size, expires_at from task_archives where task_id = :tid",
@@ -568,8 +735,8 @@ class DatabaseStore:
             "expiresAt": _to_iso(row["expires_at"])
         }
 
-    async def convert_asset(self, asset_id: str, input_data: dict, authorization: str | None):
-        license_info = await self.get_license_by_token(self._get_bearer_token(authorization))
+    async def convert_asset(self, asset_id: str, input_data: dict, authorization: str | None, admin_token: str | None = None):
+        license_info = await self._resolve_management_license(authorization, admin_token)
         row = await self.db.fetch_one(
             """
             select ta.task_id, ta.group_type
@@ -609,8 +776,8 @@ class DatabaseStore:
             "downloadUrl": download_url
         }
 
-    async def convert_task(self, task_id: str, input_data: dict, authorization: str | None):
-        task = await self.get_task(task_id, authorization)
+    async def convert_task(self, task_id: str, input_data: dict, authorization: str | None, admin_token: str | None = None):
+        task = await self.get_task(task_id, authorization, admin_token)
         asset_type = input_data["assetType"]
         target_format = input_data["targetFormat"]
         retention_days = input_data.get("retentionDays", 1)

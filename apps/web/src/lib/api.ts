@@ -12,6 +12,17 @@ import type {
 import { API_BASE_URL } from "./config"
 
 const LICENSE_STORAGE_KEY = "tb-license-token"
+const ADMIN_TOKEN_STORAGE_KEY = "tb-admin-token"
+
+export type ActivationCodeRecord = {
+  code: string
+  durationDays: number
+  status: string
+  batchNo?: string | null
+  createdAt?: string | null
+  redeemedAt?: string | null
+  expiresAt?: string | null
+}
 
 function normalizeTask(task: Task): Task {
   return {
@@ -73,6 +84,26 @@ function getAuthHeaders() {
   return headers
 }
 
+function getAdminHeaders() {
+  const adminToken = getStoredAdminToken()
+  const headers = new Headers()
+  if (adminToken) {
+    headers.set("X-Admin-Token", adminToken)
+  }
+  return headers
+}
+
+function getManagementHeaders() {
+  const headers = new Headers()
+  for (const [key, value] of getAuthHeaders().entries()) {
+    headers.set(key, value)
+  }
+  for (const [key, value] of getAdminHeaders().entries()) {
+    headers.set(key, value)
+  }
+  return headers
+}
+
 export async function redeemLicense(activationCode: string): Promise<License> {
   const response = await fetch(`${API_BASE_URL}/v1/licenses/redeem`, {
     method: "POST",
@@ -97,12 +128,42 @@ export function getStoredLicenseToken() {
   return localStorage.getItem(LICENSE_STORAGE_KEY)
 }
 
+export function getStoredAdminToken() {
+  return localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY)
+}
+
+export function clearStoredAdminToken() {
+  localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY)
+}
+
+export async function adminLogin(input: { username: string; password: string }) {
+  const response = await fetch(`${API_BASE_URL}/v1/admin/login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(input)
+  })
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, "登录失败"))
+  }
+
+  const payload = (await response.json()) as {
+    username: string
+    token: string
+    expiresAt: string
+  }
+  localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, payload.token)
+  return payload
+}
+
 export async function createTask(input: CreateTaskRequest) {
   const response = await fetch(`${API_BASE_URL}/v1/extract/tasks`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...Object.fromEntries(getAuthHeaders().entries())
+      ...Object.fromEntries(getManagementHeaders().entries())
     },
     body: JSON.stringify(input)
   })
@@ -119,7 +180,7 @@ export async function createTask(input: CreateTaskRequest) {
 export async function getTask(taskId: string) {
   const response = await fetch(`${API_BASE_URL}/v1/extract/tasks/${taskId}`, {
     cache: "no-store",
-    headers: getAuthHeaders()
+    headers: getManagementHeaders()
   })
 
   if (!response.ok) {
@@ -134,7 +195,7 @@ export async function requestArchive(taskId: string, retentionDays: 3 | 7 | 30) 
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...Object.fromEntries(getAuthHeaders().entries())
+      ...Object.fromEntries(getManagementHeaders().entries())
     },
     body: JSON.stringify({
       retentionDays
@@ -153,7 +214,7 @@ export async function convertTask(taskId: string, input: ConvertTaskRequest) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...Object.fromEntries(getAuthHeaders().entries())
+      ...Object.fromEntries(getManagementHeaders().entries())
     },
     body: JSON.stringify(input)
   })
@@ -170,7 +231,7 @@ export async function convertAsset(assetId: string, input: ConvertAssetRequest) 
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...Object.fromEntries(getAuthHeaders().entries())
+      ...Object.fromEntries(getManagementHeaders().entries())
     },
     body: JSON.stringify(input)
   })
@@ -185,7 +246,7 @@ export async function convertAsset(assetId: string, input: ConvertAssetRequest) 
 export async function listTasks() {
   const response = await fetch(`${API_BASE_URL}/v1/extract/tasks`, {
     cache: "no-store",
-    headers: getAuthHeaders()
+    headers: getManagementHeaders()
   })
 
   if (!response.ok) {
@@ -198,5 +259,45 @@ export async function listTasks() {
 
   return {
     items: payload.items.map(normalizeTask)
+  }
+}
+
+export async function generateActivationCodes(input: {
+  count: number
+  durationDays: number
+  batchNo?: string
+}) {
+  const response = await fetch(`${API_BASE_URL}/v1/licenses/admin/codes/generate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...Object.fromEntries(getAdminHeaders().entries())
+    },
+    body: JSON.stringify(input)
+  })
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, "生成卡密失败"))
+  }
+
+  return (await response.json()) as {
+    batchNo: string
+    count: number
+    items: ActivationCodeRecord[]
+  }
+}
+
+export async function listActivationCodes(limit = 200) {
+  const response = await fetch(`${API_BASE_URL}/v1/licenses/admin/codes?limit=${limit}`, {
+    cache: "no-store",
+    headers: getAdminHeaders()
+  })
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, "获取卡密列表失败"))
+  }
+
+  return (await response.json()) as {
+    items: ActivationCodeRecord[]
   }
 }

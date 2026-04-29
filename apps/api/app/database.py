@@ -1,6 +1,7 @@
 import os
 import uuid
 import datetime
+import hashlib
 from fastapi import HTTPException
 import databases
 import sqlalchemy
@@ -42,10 +43,20 @@ def detect_platform(source_url: str) -> str:
         
     raise HTTPException(status_code=404, detail="unsupported platform")
 
+
+def hash_activation_code(code: str) -> str:
+    normalized = (code or "").strip().upper()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
 # We define the schema just to ensure it matches the Postgres DB schema.
 SCHEMA_SQL = """
 create table if not exists activation_codes (
   code text primary key,
+  code_hash text unique,
+  duration_days integer not null default 30,
+  status text not null default 'active',
+  batch_no text,
+  expires_at timestamp,
   license_id text unique,
   redeemed_at timestamp,
   created_at timestamp not null default current_timestamp
@@ -93,6 +104,7 @@ create table if not exists tasks (
 
 create index if not exists idx_tasks_license_created_at on tasks(license_id, created_at desc);
 create index if not exists idx_tasks_status_created_at on tasks(status, created_at asc);
+create unique index if not exists idx_activation_codes_code_hash on activation_codes(code_hash);
 
 create table if not exists task_assets (
   id text primary key,
@@ -135,6 +147,64 @@ create table if not exists asset_convert_jobs (
 );
 """
 
+async def ensure_activation_code_schema():
+    columns = await database.fetch_all("PRAGMA table_info(activation_codes)")
+    column_names = {row["name"] for row in columns}
+
+    if "code_hash" not in column_names:
+        await database.execute("alter table activation_codes add column code_hash text")
+    if "duration_days" not in column_names:
+        await database.execute("alter table activation_codes add column duration_days integer not null default 30")
+    if "status" not in column_names:
+        await database.execute("alter table activation_codes add column status text not null default 'active'")
+    if "batch_no" not in column_names:
+        await database.execute("alter table activation_codes add column batch_no text")
+    if "expires_at" not in column_names:
+        await database.execute("alter table activation_codes add column expires_at timestamp")
+
+    await database.execute(
+        """
+        update activation_codes
+        set duration_days = 30
+        where duration_days is null
+        """
+    )
+    await database.execute(
+        """
+        update activation_codes
+        set status = case
+          when license_id is not null then 'redeemed'
+          else 'active'
+        end
+        where status is null or status = ''
+        """
+    )
+
+    rows_without_hash = await database.fetch_all(
+        """
+        select code
+        from activation_codes
+        where code_hash is null or code_hash = ''
+        """
+    )
+    for row in rows_without_hash:
+        code = row["code"]
+        await database.execute(
+            """
+            update activation_codes
+            set code_hash = :code_hash
+            where code = :code
+            """,
+            {
+                "code": code,
+                "code_hash": hash_activation_code(code)
+            }
+        )
+
+    await database.execute(
+        "create unique index if not exists idx_activation_codes_code_hash on activation_codes(code_hash)"
+    )
+
 
 async def init_db():
     await database.connect()
@@ -146,6 +216,7 @@ async def init_db():
                 await database.execute(statement)
             except Exception as e:
                 print(f"Error executing schema statement: {e}")
+    await ensure_activation_code_schema()
 
 async def close_db():
     await database.disconnect()
