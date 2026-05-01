@@ -45,6 +45,15 @@ class OssStorageService:
             self.logger.error(f"Error generating presigned url: {e}")
             return ""
 
+    def upload_bytes(self, key: str, body: bytes, content_type: str) -> None:
+        """Upload generated content to object storage."""
+        self.s3_client.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=body,
+            ContentType=content_type
+        )
+
     def generate_presigned_post(self, key: str, content_type: str, expires_in: int = 3600):
         """Generate a presigned POST for uploading a file."""
         try:

@@ -57,10 +57,13 @@ async function load() {
 
 async function handleArchive(retentionDays: 3 | 7 | 30) {
   try {
-    await requestArchive(taskId.value, retentionDays)
+    const archive = await requestArchive(taskId.value, retentionDays)
     const nextTask = await getTask(taskId.value)
     task.value = nextTask
     ElMessage.success(`✅ ZIP 已生成，保留 ${retentionDays} 天`)
+    if (archive.downloadUrl) {
+      window.open(archive.downloadUrl, "_blank", "noopener")
+    }
   } catch (archiveError) {
     ElMessage.error(archiveError instanceof Error ? archiveError.message : "ZIP 生成失败")
   }

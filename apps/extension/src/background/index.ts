@@ -61,22 +61,6 @@ type QueuedTask = {
   taskToken: string
 }
 
-type PresignUpload = {
-  clientAssetId: string
-  assetId: string
-  storageKey: string
-  method: "PUT"
-  uploadUrl: string
-  accessUrl?: string
-}
-
-type CompleteUpload = {
-  assetId: string
-  clientAssetId: string
-  storageKey: string
-  accessUrl?: string
-}
-
 type ExtractedAsset = {
   groupType: GroupType
   skuName?: string | null
@@ -100,14 +84,6 @@ type ExtractedTaskPayload = {
   }
 }
 
-type DownloadedAsset = ExtractedAsset & {
-  clientAssetId: string
-  blob: Blob
-  ext: string
-  mimeType: string
-  originalSourceUrl: string
-}
-
 type PollResult = {
   success: boolean
   claimedTaskId?: string
@@ -124,33 +100,6 @@ function sleep(ms: number) {
   return new Promise((resolve) => globalThis.setTimeout(resolve, ms))
 }
 
-function getFileExtensionFromMimeType(mimeType: string | undefined) {
-  switch (mimeType) {
-    case "image/jpeg":
-      return "jpg"
-    case "image/png":
-      return "png"
-    case "image/webp":
-      return "webp"
-    case "image/gif":
-      return "gif"
-    case "image/svg+xml":
-      return "svg"
-    default:
-      return null
-  }
-}
-
-function getFileExtensionFromUrl(url: string) {
-  try {
-    const pathname = new URL(url).pathname
-    const matched = pathname.match(/\.([a-zA-Z0-9]+)$/)
-    return matched?.[1]?.toLowerCase() || null
-  } catch {
-    return null
-  }
-}
-
 async function assertOk(response: Response, message: string) {
   if (response.ok) {
     return response
@@ -160,23 +109,11 @@ async function assertOk(response: Response, message: string) {
   throw new Error(body ? `${message}: ${body}` : message)
 }
 
-async function uploadPresignedAsset(upload: PresignUpload, asset: DownloadedAsset) {
-  const response = await fetch(upload.uploadUrl, {
-    method: upload.method,
-    headers: {
-      "Content-Type": asset.mimeType
-    },
-    body: asset.blob
-  })
-
-  await assertOk(response, `上传文件失败 ${upload.clientAssetId}`)
-}
-
 async function markTaskFailed(
   task: QueuedTask,
   deviceToken: string,
   error: unknown,
-  errorCode = "UPLOAD_FAILED"
+  errorCode = "INTERNAL_ERROR"
 ) {
   const errorMessage = error instanceof Error ? error.message : "unknown error"
 
@@ -192,7 +129,7 @@ async function markTaskFailed(
       errorMessage,
       retryable: true,
       diagnostics: {
-        stage: "background-upload"
+        stage: "background-extract"
       }
     })
   })
@@ -345,44 +282,6 @@ async function runPageExtraction(task: QueuedTask) {
   }
 }
 
-async function downloadAsset(groupType: ExtractedAsset["groupType"], asset: ExtractedAsset) {
-  const response = await fetch(asset.sourceUrl)
-  await assertOk(response, `下载原图失败 ${asset.sourceUrl}`)
-
-  const blob = await response.blob()
-  const mimeType = response.headers.get("content-type") || blob.type || asset.mimeType || "image/jpeg"
-  const ext =
-    getFileExtensionFromMimeType(mimeType) || getFileExtensionFromUrl(asset.sourceUrl) || "jpg"
-
-  return {
-    ...asset,
-    groupType,
-    clientAssetId: `${groupType}_${asset.sortOrder}`,
-    blob,
-    mimeType,
-    ext,
-    originalSourceUrl: asset.sourceUrl
-  } satisfies DownloadedAsset
-}
-
-async function collectDownloadedAssets(extracted: ExtractedTaskPayload) {
-  const groups = (Object.entries(extracted.images) as Array<
-    [ExtractedAsset["groupType"], ExtractedAsset[]]
-  >).flatMap(([groupType, assets]) => assets.map((asset) => ({ groupType, asset })))
-
-  const settled = await Promise.allSettled(
-    groups.map(({ groupType, asset }) => downloadAsset(groupType, asset))
-  )
-
-  return settled
-    .filter(
-      (
-        result
-      ): result is PromiseFulfilledResult<DownloadedAsset> => result.status === "fulfilled"
-    )
-    .map((result) => result.value)
-}
-
 async function ensureDeviceRegistered() {
   const existingDeviceId = await getDeviceId()
 
@@ -469,108 +368,26 @@ async function executeTask(task: QueuedTask, deviceId: string, deviceToken: stri
   )
 
   const extracted = await runPageExtraction(task)
-  const downloadedAssets = await collectDownloadedAssets(extracted)
+  const extractedAssetCount = Object.values(extracted.images).reduce(
+    (count, assets) => count + assets.length,
+    0
+  )
 
-  if (!downloadedAssets.length) {
-    throw new Error("no downloadable product images found")
+  if (!extractedAssetCount) {
+    throw new Error("no product image urls found")
   }
 
-  const presignResponse = await assertOk(
-    await fetch(`${API_BASE_URL}/v1/uploads/presign`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${deviceToken}`
-      },
-      body: JSON.stringify({
-        taskId: task.taskId,
-        files: downloadedAssets.map((asset) => ({
-          clientAssetId: asset.clientAssetId,
-          groupType: asset.groupType,
-          ext: asset.ext,
-          mimeType: asset.mimeType
-        }))
-      })
-    }),
-    "获取上传签名失败"
-  )
-
-  const presignPayload = (await presignResponse.json()) as {
-    uploads: PresignUpload[]
-  }
-
-  await assertOk(
-    await fetch(`${API_BASE_URL}/v1/extract/tasks/${task.taskId}/progress`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${deviceToken}`
-      },
-      body: JSON.stringify({
-        taskToken: task.taskToken,
-        status: "uploading",
-        stage: "uploading-assets",
-        sentAt: new Date().toISOString()
-      })
-    }),
-    "更新上传进度失败"
-  )
-
-  await Promise.all(
-    presignPayload.uploads.map((upload) => {
-      const asset = downloadedAssets.find(
-        (candidate) => candidate.clientAssetId === upload.clientAssetId
-      )
-
-      if (!asset) {
-        throw new Error(`missing local asset for ${upload.clientAssetId}`)
-      }
-
-      return uploadPresignedAsset(upload, asset)
-    })
-  )
-
-  const completeResponse = await assertOk(
-    await fetch(`${API_BASE_URL}/v1/uploads/complete`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${deviceToken}`
-      },
-      body: JSON.stringify({
-        taskId: task.taskId,
-        uploads: presignPayload.uploads.map((upload) => ({
-          assetId: upload.assetId,
-          clientAssetId: upload.clientAssetId,
-          storageKey: upload.storageKey
-        }))
-      })
-    }),
-    "确认上传结果失败"
-  )
-
-  const completePayload = (await completeResponse.json()) as {
-    uploads: CompleteUpload[]
-  }
-
-  const uploadedByClientAssetId = new Map(
-    completePayload.uploads.map((upload) => [upload.clientAssetId, upload] as const)
-  )
-
-  const buildUploadedImages = (groupType: ExtractedAsset["groupType"]) =>
-    downloadedAssets
-      .filter((asset) => asset.groupType === groupType)
+  const buildExtractedImages = (groupType: ExtractedAsset["groupType"]) =>
+    extracted.images[groupType]
       .map((asset) => {
-        const uploaded = uploadedByClientAssetId.get(asset.clientAssetId)
         return {
           groupType,
           skuName: asset.skuName ?? null,
-          sourceUrl: uploaded?.accessUrl ?? asset.originalSourceUrl,
+          sourceUrl: asset.sourceUrl,
           sortOrder: asset.sortOrder,
-          mimeType: asset.mimeType,
+          mimeType: asset.mimeType ?? "image/jpeg",
           width: asset.width,
-          height: asset.height,
-          fileSize: asset.blob.size
+          height: asset.height
         }
       })
 
@@ -588,10 +405,10 @@ async function executeTask(task: QueuedTask, deviceId: string, deviceToken: stri
         canonicalUrl: extracted.canonicalUrl,
         extractorVersion: EXTRACTOR_VERSION,
         images: {
-          main: buildUploadedImages("main"),
-          sku: buildUploadedImages("sku"),
-          detail: buildUploadedImages("detail"),
-          other: buildUploadedImages("other")
+          main: buildExtractedImages("main"),
+          sku: buildExtractedImages("sku"),
+          detail: buildExtractedImages("detail"),
+          other: buildExtractedImages("other")
         },
         meta: {
           capturedAt: new Date().toISOString()
@@ -753,9 +570,9 @@ async function pollNextTask(): Promise<PollResult> {
           ? "PRODUCT_NOT_FOUND"
           : errorMessage === "page load timeout"
           ? "PAGE_TIMEOUT"
-          : errorMessage === "no downloadable product images found"
+          : errorMessage === "no product image urls found"
             ? "PRODUCT_NOT_FOUND"
-            : "UPLOAD_FAILED"
+            : "INTERNAL_ERROR"
 
       try {
         await markTaskFailed(task, deviceToken, error, errorCode)

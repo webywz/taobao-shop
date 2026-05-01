@@ -1,7 +1,14 @@
 import asyncio
 import datetime
+import io
 import json
+import mimetypes
+import re
 import secrets
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
 from fastapi import HTTPException
 from app.database import database, create_id, plus_days, detect_platform, hash_activation_code
 from app.admin_auth import verify_admin_token
@@ -697,17 +704,134 @@ class DatabaseStore:
 
         return await self._get_task_by_id_without_auth(task_id)
 
+    def _archive_asset_sort_key(self, asset: dict):
+        group_order = {
+            "main": 0,
+            "sku": 1,
+            "detail": 2,
+            "other": 3
+        }
+        return (
+            group_order.get(asset["group_type"], 99),
+            asset["sort_order"] or 0,
+            asset["id"]
+        )
+
+    def _sanitize_archive_name_part(self, value: str | None):
+        normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", value or "").strip("-._")
+        return normalized[:48] or "image"
+
+    def _asset_archive_extension(self, asset: dict, content_type: str | None):
+        candidates = [
+            content_type.split(";")[0].strip().lower() if content_type else "",
+            (asset.get("mime_type") or "").split(";")[0].strip().lower()
+        ]
+
+        for candidate in candidates:
+            guessed = mimetypes.guess_extension(candidate)
+            if guessed:
+                extension = guessed.lstrip(".").lower()
+                return "jpg" if extension in {"jpe", "jpeg"} else extension
+
+        try:
+            path = urllib.parse.urlparse(asset["source_url"]).path
+            guessed_type, _ = mimetypes.guess_type(path)
+            if guessed_type:
+                guessed = mimetypes.guess_extension(guessed_type)
+                if guessed:
+                    extension = guessed.lstrip(".").lower()
+                    return "jpg" if extension in {"jpe", "jpeg"} else extension
+        except Exception:
+            pass
+
+        return "jpg"
+
+    def _archive_asset_path(self, asset: dict, group_index: int, content_type: str | None):
+        group_type = asset["group_type"] if asset["group_type"] in {"main", "sku", "detail", "other"} else "other"
+        label = self._sanitize_archive_name_part(asset.get("sku_name"))
+        asset_id = self._sanitize_archive_name_part(asset["id"])
+        extension = self._asset_archive_extension(asset, content_type)
+        return f"{group_type}/{group_index:03d}-{label}-{asset_id}.{extension}"
+
+    def _download_archive_asset(self, asset: dict):
+        request = urllib.request.Request(
+            asset["source_url"],
+            headers={
+                "User-Agent": "Mozilla/5.0 TB-PDD-Image-Archiver/1.0",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+            }
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                status = getattr(response, "status", 200)
+                if status >= 400:
+                    raise RuntimeError(f"{asset['source_url']} returned HTTP {status}")
+
+                max_image_bytes = 50 * 1024 * 1024
+                body = response.read(max_image_bytes + 1)
+                if len(body) > max_image_bytes:
+                    raise RuntimeError(f"{asset['source_url']} exceeds 50MB")
+                if not body:
+                    raise RuntimeError(f"{asset['source_url']} returned an empty body")
+
+                return body, response.headers.get("Content-Type")
+        except urllib.error.URLError as error:
+            reason = getattr(error, "reason", error)
+            raise RuntimeError(f"{asset['source_url']} download failed: {reason}") from error
+
+    def _build_archive_bytes(self, assets: list[dict]):
+        buffer = io.BytesIO()
+        group_counts: dict[str, int] = {}
+
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for asset in sorted(assets, key=self._archive_asset_sort_key):
+                group_type = asset["group_type"] if asset["group_type"] in {"main", "sku", "detail", "other"} else "other"
+                group_counts[group_type] = group_counts.get(group_type, 0) + 1
+                body, content_type = self._download_archive_asset(asset)
+                archive.writestr(
+                    self._archive_asset_path(asset, group_counts[group_type], content_type),
+                    body
+                )
+
+        return buffer.getvalue()
+
     async def request_archive(self, task_id: str, input_data: dict, authorization: str | None, admin_token: str | None = None):
-        await self.get_task(task_id, authorization, admin_token)
-        retention_days = input_data.get("retentionDays", 7)
+        task = await self.get_task(task_id, authorization, admin_token)
+        if task["status"] != "completed":
+            raise HTTPException(status_code=400, detail="task must be completed before archive download")
+
+        asset_rows = await self.db.fetch_all(
+            """
+            select id, group_type, sku_name, source_url, mime_type, sort_order
+            from task_assets
+            where task_id = :tid
+            """,
+            {"tid": task_id}
+        )
+        assets = [
+            {
+                "id": row["id"],
+                "group_type": row["group_type"],
+                "sku_name": row["sku_name"],
+                "source_url": row["source_url"],
+                "mime_type": row["mime_type"],
+                "sort_order": row["sort_order"]
+            }
+            for row in asset_rows
+        ]
+        if not assets:
+            raise HTTPException(status_code=400, detail="task has no images to archive")
+
+        retention_days = int(input_data.get("retentionDays", 7))
         archive_id = create_id("arc")
-        # Fake download URL since we don't have the zip generation logic yet
-        download_url = self.storage.generate_presigned_url(f"tasks/{task_id}/archive/{archive_id}.zip")
+        storage_key = f"tasks/{task_id}/archive/{archive_id}.zip"
+        expires_at = plus_days(retention_days)
 
         await self.db.execute(
             """
             insert into task_archives (task_id, archive_id, status, retention_days, download_url, file_size, expires_at, updated_at)
-            values (:tid, :aid, 'ready', :rdays, :durl, 1024, :expires, current_timestamp)
+            values (:tid, :aid, 'processing', :rdays, null, null, :expires, current_timestamp)
             on conflict (task_id)
             do update set
               archive_id = excluded.archive_id,
@@ -722,10 +846,54 @@ class DatabaseStore:
                 "tid": task_id,
                 "aid": archive_id,
                 "rdays": retention_days,
-                "durl": download_url,
-                "expires": plus_days(retention_days)
+                "expires": expires_at
             }
         )
+
+        try:
+            archive_bytes = await asyncio.to_thread(self._build_archive_bytes, assets)
+            await asyncio.to_thread(
+                self.storage.upload_bytes,
+                storage_key,
+                archive_bytes,
+                "application/zip"
+            )
+            download_url = self.storage.generate_presigned_url(storage_key)
+            if not download_url:
+                raise RuntimeError("failed to generate ZIP download URL")
+
+            await self.db.execute(
+                """
+                update task_archives
+                set status = 'ready',
+                    download_url = :durl,
+                    file_size = :fsize,
+                    updated_at = current_timestamp
+                where task_id = :tid and archive_id = :aid
+                """,
+                {
+                    "tid": task_id,
+                    "aid": archive_id,
+                    "durl": download_url,
+                    "fsize": len(archive_bytes)
+                }
+            )
+        except Exception as error:
+            await self.db.execute(
+                """
+                update task_archives
+                set status = 'failed',
+                    download_url = null,
+                    file_size = null,
+                    updated_at = current_timestamp
+                where task_id = :tid and archive_id = :aid
+                """,
+                {
+                    "tid": task_id,
+                    "aid": archive_id
+                }
+            )
+            raise HTTPException(status_code=502, detail=f"ZIP generation failed: {error}") from error
 
         return await self.get_archive(task_id, authorization, admin_token)
 
