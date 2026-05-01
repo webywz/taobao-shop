@@ -151,6 +151,15 @@ onUnmounted(() => {
 
 <template>
   <div class="max-w-7xl mx-auto py-8">
+    <div class="mb-5 flex items-center justify-between">
+      <router-link
+        to="/tasks"
+        class="inline-flex h-9 items-center rounded-md border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 hover:text-gray-950 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+      >
+        返回历史
+      </router-link>
+    </div>
+
     <div v-if="error" class="p-4 rounded-md bg-red-50 text-red-700 mb-6">
       {{ error }}
     </div>
