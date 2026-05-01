@@ -3,6 +3,8 @@
 import type {
   ConvertAssetRequest,
   ConvertTaskRequest,
+  CreateTasksBatchRequest,
+  CreateTasksBatchResponse,
   CreateTaskRequest,
   License,
   Task,
@@ -163,6 +165,23 @@ export async function createTask(input: CreateTaskRequest) {
   return (await response.json()) as {
     taskId: string
   }
+}
+
+export async function createTasksBatch(input: CreateTasksBatchRequest) {
+  const response = await apiFetch("/v1/extract/tasks/batch", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...Object.fromEntries(getAuthHeaders().entries())
+    },
+    body: JSON.stringify(input)
+  }, "批量创建任务失败")
+
+  if (!response.ok) {
+    await throwApiError(response, "批量创建任务失败")
+  }
+
+  return (await response.json()) as CreateTasksBatchResponse
 }
 
 export async function getTask(taskId: string) {

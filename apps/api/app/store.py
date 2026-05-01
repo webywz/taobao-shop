@@ -390,9 +390,8 @@ class DatabaseStore:
         finally:
             self.device_event_queues.discard(queue)
 
-    async def create_task(self, input_data: dict, authorization: str | None, admin_token: str | None = None):
-        license_info = await self._resolve_management_license(authorization, admin_token)
-        platform = detect_platform(input_data["sourceUrl"])
+    async def _create_task_for_license(self, source_url: str, license_info: dict):
+        platform = detect_platform(source_url)
         task_id = create_id("task")
         task_token = create_id("ttok")
         created_at = datetime.datetime.now(datetime.timezone.utc)
@@ -409,7 +408,7 @@ class DatabaseStore:
                 "lid": license_info["licenseId"],
                 "ttok": task_token,
                 "plat": platform,
-                "url": input_data["sourceUrl"],
+                "url": source_url,
                 "cat": created_at
             }
         )
@@ -424,9 +423,65 @@ class DatabaseStore:
             "taskId": task_id,
             "platform": platform,
             "status": "pending",
-            "sourceUrl": input_data["sourceUrl"],
-            "canonicalUrl": input_data["sourceUrl"],
+            "sourceUrl": source_url,
+            "canonicalUrl": source_url,
             "createdAt": _to_iso(created_at)
+        }
+
+    async def create_task(self, input_data: dict, authorization: str | None, admin_token: str | None = None):
+        license_info = await self._resolve_management_license(authorization, admin_token)
+        return await self._create_task_for_license(input_data["sourceUrl"], license_info)
+
+    async def create_tasks_batch(self, input_data: dict, authorization: str | None, admin_token: str | None = None):
+        license_info = await self._resolve_management_license(authorization, admin_token)
+        source_urls = input_data.get("sourceUrls")
+
+        if not isinstance(source_urls, list):
+            raise HTTPException(status_code=400, detail="sourceUrls must be an array")
+
+        items = []
+
+        for source_url in source_urls:
+            if not isinstance(source_url, str) or not source_url.strip():
+                items.append({
+                    "sourceUrl": source_url if isinstance(source_url, str) else "",
+                    "success": False,
+                    "errorMessage": "sourceUrl is required"
+                })
+                continue
+
+            normalized_url = source_url.strip()
+
+            try:
+                task = await self._create_task_for_license(normalized_url, license_info)
+                items.append({
+                    "sourceUrl": normalized_url,
+                    "success": True,
+                    "taskId": task["taskId"],
+                    "platform": task["platform"],
+                    "status": task["status"],
+                    "createdAt": task["createdAt"]
+                })
+            except HTTPException as error:
+                items.append({
+                    "sourceUrl": normalized_url,
+                    "success": False,
+                    "errorMessage": str(error.detail)
+                })
+            except Exception as error:
+                items.append({
+                    "sourceUrl": normalized_url,
+                    "success": False,
+                    "errorMessage": str(error) or "create task failed"
+                })
+
+        success_count = len([item for item in items if item["success"]])
+
+        return {
+            "items": items,
+            "total": len(items),
+            "successCount": success_count,
+            "failedCount": len(items) - success_count
         }
 
     async def hydrate_task(self, row: dict):
@@ -543,12 +598,19 @@ class DatabaseStore:
 
         row = await self.db.fetch_one(
             """
-            select id, platform, source_url, task_token
-            from tasks
-            where status = 'pending'
-            order by created_at asc
-            limit 1
+            update tasks
+            set status = 'claimed', device_id = :did
+            where id = (
+                select id
+                from tasks
+                where status = 'pending'
+                order by created_at asc
+                limit 1
+            )
+            and status = 'pending'
+            returning id, platform, source_url, task_token
             """,
+            {"did": device["deviceId"]}
         )
         if not row:
             return None
@@ -574,8 +636,15 @@ class DatabaseStore:
         device = await self.get_device_by_token(authorization)
         task = await self._get_task_record_by_token(task_id, input_data["taskToken"])
 
+        if task["device_id"] and task["device_id"] != device["deviceId"]:
+            raise HTTPException(status_code=401, detail="task owned by another device")
+
         await self.db.execute(
-            "update tasks set status = 'claimed', device_id = :did where id = :tid",
+            """
+            update tasks
+            set status = 'claimed', device_id = :did
+            where id = :tid and status in ('pending', 'claimed')
+            """,
             {"did": device["deviceId"], "tid": task_id}
         )
 

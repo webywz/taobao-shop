@@ -9,6 +9,20 @@ type BridgeMessage =
     }
   | {
       source: "tb-image-saas-web"
+      type: "GET_CONCURRENCY_CONFIG"
+      requestId: string
+      payload: Record<string, never>
+    }
+  | {
+      source: "tb-image-saas-web"
+      type: "SET_CONCURRENCY_CONFIG"
+      requestId: string
+      payload: {
+        maxConcurrentTasks: number
+      }
+    }
+  | {
+      source: "tb-image-saas-web"
       type: "PLUGIN_STATUS"
       requestId: string
       payload: Record<string, never>

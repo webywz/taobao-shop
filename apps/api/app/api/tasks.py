@@ -13,6 +13,15 @@ async def create_task(
     input_data = await request.json()
     return await store.create_task(input_data, authorization, x_admin_token)
 
+@router.post("/batch")
+async def create_tasks_batch(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    x_admin_token: Optional[str] = Header(None, alias="X-Admin-Token")
+):
+    input_data = await request.json()
+    return await store.create_tasks_batch(input_data, authorization, x_admin_token)
+
 @router.get("")
 async def list_tasks(
     authorization: Optional[str] = Header(None),

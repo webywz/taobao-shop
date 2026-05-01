@@ -119,6 +119,27 @@ export interface CreateTaskRequest {
   sourceUrl: string
 }
 
+export interface CreateTasksBatchRequest {
+  sourceUrls: string[]
+}
+
+export interface CreateTasksBatchItem {
+  sourceUrl: string
+  success: boolean
+  taskId?: string
+  platform?: Platform
+  status?: TaskStatus
+  createdAt?: string
+  errorMessage?: string
+}
+
+export interface CreateTasksBatchResponse {
+  items: CreateTasksBatchItem[]
+  total: number
+  successCount: number
+  failedCount: number
+}
+
 export interface ClaimTaskRequest {
   taskToken: string
 }

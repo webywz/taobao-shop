@@ -1,11 +1,20 @@
 "use client"
 
-type BridgeRequestType = "PLUGIN_PING" | "PLUGIN_STATUS" | "TRIGGER_POLL"
+type BridgeRequestType =
+  | "PLUGIN_PING"
+  | "PLUGIN_STATUS"
+  | "TRIGGER_POLL"
+  | "GET_CONCURRENCY_CONFIG"
+  | "SET_CONCURRENCY_CONFIG"
 
 type BridgePayloadMap = {
   PLUGIN_PING: Record<string, never>
   PLUGIN_STATUS: Record<string, never>
   TRIGGER_POLL: Record<string, never>
+  GET_CONCURRENCY_CONFIG: Record<string, never>
+  SET_CONCURRENCY_CONFIG: {
+    maxConcurrentTasks: number
+  }
 }
 
 type BridgeResponseMap = {
@@ -20,6 +29,18 @@ type BridgeResponseMap = {
   }
   TRIGGER_POLL: {
     success: boolean
+  }
+  GET_CONCURRENCY_CONFIG: {
+    maxConcurrentTasks: number
+    min: number
+    max: number
+    defaultValue: number
+  }
+  SET_CONCURRENCY_CONFIG: {
+    maxConcurrentTasks: number
+    min: number
+    max: number
+    defaultValue: number
   }
 }
 
@@ -87,4 +108,14 @@ export async function getPluginStatus() {
 
 export async function triggerPluginPoll() {
   return sendBridgeMessage("TRIGGER_POLL", {})
+}
+
+export async function getConcurrencyConfig() {
+  return sendBridgeMessage("GET_CONCURRENCY_CONFIG", {})
+}
+
+export async function setConcurrencyConfig(maxConcurrentTasks: number) {
+  return sendBridgeMessage("SET_CONCURRENCY_CONFIG", {
+    maxConcurrentTasks
+  })
 }

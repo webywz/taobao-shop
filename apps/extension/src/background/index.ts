@@ -1,11 +1,16 @@
 import type { GroupType } from "@tb-pdd-image/shared"
 
 import {
+  DEFAULT_MAX_CONCURRENT_TASKS,
+  MAX_MAX_CONCURRENT_TASKS,
+  MIN_MAX_CONCURRENT_TASKS,
   getDeviceId,
   getDeviceToken,
   getInstallationId,
+  getMaxConcurrentTasks,
   setDeviceId,
-  setDeviceToken
+  setDeviceToken,
+  setMaxConcurrentTasks
 } from "../shared/storage"
 import { API_BASE_URL } from "../shared/config"
 import { EXTRACTOR_VERSION, EXTENSION_VERSION } from "../shared/version"
@@ -13,7 +18,8 @@ import { EXTRACTOR_VERSION, EXTENSION_VERSION } from "../shared/version"
 const POLL_ALARM_NAME = "task-poll"
 const TAB_LOAD_TIMEOUT_MS = 60000
 const TASK_EVENTS_RETRY_MS = 5000
-let pollInFlight = false
+const activeTaskIds = new Set<string>()
+let queuePumpInFlight = false
 let taskEventsAbortController: AbortController | null = null
 let taskEventsConnecting = false
 
@@ -509,13 +515,13 @@ async function ensureTaskEvents(deviceToken: string) {
 }
 
 async function pollNextTask(): Promise<PollResult> {
-  if (pollInFlight) {
+  if (queuePumpInFlight) {
     return {
       success: true
     }
   }
 
-  pollInFlight = true
+  queuePumpInFlight = true
 
   try {
     const deviceId = await ensureDeviceRegistered()
@@ -531,61 +537,44 @@ async function pollNextTask(): Promise<PollResult> {
 
     void ensureTaskEvents(deviceToken)
 
-    const response = await fetch(`${API_BASE_URL}/v1/extract/tasks/queue/next`, {
-      headers: {
-        Authorization: `Bearer ${deviceToken}`
-      }
-    })
+    const maxConcurrentTasks = await getMaxConcurrentTasks()
+    let claimedTaskId: string | undefined
 
-    if (response.status === 204) {
-      return {
-        success: true
+    while (activeTaskIds.size < maxConcurrentTasks) {
+      const response = await fetch(`${API_BASE_URL}/v1/extract/tasks/queue/next`, {
+        headers: {
+          Authorization: `Bearer ${deviceToken}`
+        }
+      })
+
+      if (response.status === 204) {
+        break
       }
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "")
+        return {
+          success: false,
+          errorCode: "QUEUE_FETCH_FAILED",
+          errorMessage: body || `拉取任务失败：${response.status}`
+        }
+      }
+
+      const task = (await response.json()) as QueuedTask
+
+      if (activeTaskIds.has(task.taskId)) {
+        break
+      }
+
+      claimedTaskId = task.taskId
+      activeTaskIds.add(task.taskId)
+
+      void executeClaimedTask(task, deviceId, deviceToken)
     }
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => "")
-      return {
-        success: false,
-        errorCode: "QUEUE_FETCH_FAILED",
-        errorMessage: body || `拉取任务失败：${response.status}`
-      }
-    }
-
-    const task = (await response.json()) as QueuedTask
-
-    try {
-      await executeTask(task, deviceId, deviceToken)
-      return {
-        success: true,
-        claimedTaskId: task.taskId
-      }
-    } catch (error) {
-      console.error("task execution failed", error)
-      const errorMessage = getErrorMessage(error)
-      const errorCode =
-        errorMessage === "AUTH_REQUIRED"
-          ? "AUTH_REQUIRED"
-          : errorMessage === "PRODUCT_NOT_FOUND"
-          ? "PRODUCT_NOT_FOUND"
-          : errorMessage === "page load timeout"
-          ? "PAGE_TIMEOUT"
-          : errorMessage === "no product image urls found"
-            ? "PRODUCT_NOT_FOUND"
-            : "INTERNAL_ERROR"
-
-      try {
-        await markTaskFailed(task, deviceToken, error, errorCode)
-      } catch (failError) {
-        console.error("mark task failed request failed", failError)
-      }
-
-      return {
-        success: false,
-        claimedTaskId: task.taskId,
-        errorCode,
-        errorMessage
-      }
+    return {
+      success: true,
+      claimedTaskId
     }
   } catch (error) {
     const errorMessage = getErrorMessage(error)
@@ -600,7 +589,35 @@ async function pollNextTask(): Promise<PollResult> {
           : errorMessage
     }
   } finally {
-    pollInFlight = false
+    queuePumpInFlight = false
+  }
+}
+
+async function executeClaimedTask(task: QueuedTask, deviceId: string, deviceToken: string) {
+  try {
+    await executeTask(task, deviceId, deviceToken)
+  } catch (error) {
+    console.error("task execution failed", error)
+    const errorMessage = getErrorMessage(error)
+    const errorCode =
+      errorMessage === "AUTH_REQUIRED"
+        ? "AUTH_REQUIRED"
+        : errorMessage === "PRODUCT_NOT_FOUND"
+          ? "PRODUCT_NOT_FOUND"
+          : errorMessage === "page load timeout"
+            ? "PAGE_TIMEOUT"
+            : errorMessage === "no product image urls found"
+              ? "PRODUCT_NOT_FOUND"
+              : "INTERNAL_ERROR"
+
+    try {
+      await markTaskFailed(task, deviceToken, error, errorCode)
+    } catch (failError) {
+      console.error("mark task failed request failed", failError)
+    }
+  } finally {
+    activeTaskIds.delete(task.taskId)
+    void pollNextTask()
   }
 }
 
@@ -646,6 +663,32 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     void (async () => {
       ensurePollAlarm()
       sendResponse(await pollNextTask())
+    })()
+    return true
+  }
+
+  if (message?.type === "GET_CONCURRENCY_CONFIG") {
+    void (async () => {
+      sendResponse({
+        maxConcurrentTasks: await getMaxConcurrentTasks(),
+        min: MIN_MAX_CONCURRENT_TASKS,
+        max: MAX_MAX_CONCURRENT_TASKS,
+        defaultValue: DEFAULT_MAX_CONCURRENT_TASKS
+      })
+    })()
+    return true
+  }
+
+  if (message?.type === "SET_CONCURRENCY_CONFIG") {
+    void (async () => {
+      const maxConcurrentTasks = await setMaxConcurrentTasks(message.payload?.maxConcurrentTasks)
+      sendResponse({
+        maxConcurrentTasks,
+        min: MIN_MAX_CONCURRENT_TASKS,
+        max: MAX_MAX_CONCURRENT_TASKS,
+        defaultValue: DEFAULT_MAX_CONCURRENT_TASKS
+      })
+      void pollNextTask()
     })()
     return true
   }
