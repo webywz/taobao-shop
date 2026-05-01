@@ -15,14 +15,6 @@ type BridgeMessage =
     }
   | {
       source: "tb-image-saas-web"
-      type: "BIND_LICENSE"
-      requestId: string
-      payload: {
-        licenseToken: string
-      }
-    }
-  | {
-      source: "tb-image-saas-web"
       type: "TRIGGER_POLL"
       requestId: string
       payload: Record<string, never>

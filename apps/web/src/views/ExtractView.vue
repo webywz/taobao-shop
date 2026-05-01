@@ -48,9 +48,9 @@ async function handlePluginStatus() {
     const ping = await pingPlugin()
     const status = await getPluginStatus()
     message.value = status.installed
-      ? status.bound
-        ? `插件已安装，版本 ${ping.version ?? "-"}，设备 ${status.deviceId ?? "-"} 已绑定`
-        : `插件已安装，版本 ${ping.version ?? "-"}，但还没有绑定当前 license`
+      ? status.ready
+        ? `插件已安装，版本 ${ping.version ?? "-"}，设备 ${status.deviceId ?? "-"} 已就绪`
+        : `插件已安装，版本 ${ping.version ?? "-"}，正在准备设备身份`
       : "插件未安装"
     ElMessage.info(message.value)
   } catch {

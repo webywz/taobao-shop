@@ -1,7 +1,6 @@
 const INSTALLATION_ID_KEY = "installationId"
 const DEVICE_ID_KEY = "deviceId"
 const DEVICE_TOKEN_KEY = "deviceToken"
-const LICENSE_TOKEN_KEY = "licenseToken"
 
 function createInstallationId() {
   return `ins_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`
@@ -42,15 +41,4 @@ export async function setDeviceToken(deviceToken: string) {
 export async function getDeviceToken() {
   const data = await chrome.storage.local.get(DEVICE_TOKEN_KEY)
   return (data[DEVICE_TOKEN_KEY] as string | undefined) ?? null
-}
-
-export async function setLicenseToken(licenseToken: string) {
-  await chrome.storage.local.set({
-    [LICENSE_TOKEN_KEY]: licenseToken
-  })
-}
-
-export async function getLicenseToken() {
-  const data = await chrome.storage.local.get(LICENSE_TOKEN_KEY)
-  return (data[LICENSE_TOKEN_KEY] as string | undefined) ?? null
 }

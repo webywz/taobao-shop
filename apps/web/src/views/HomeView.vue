@@ -20,8 +20,8 @@ const steps: HomeStep[] = [
     shortTitle: "激活当前浏览器",
     title: "激活当前浏览器",
     copy: "输入卡密，生成当前浏览器可用的授权状态。",
-    detail: "激活后会生成当前设备可用的 license_token，后续插件绑定和任务执行都基于这个状态。",
-    status: "先完成授权绑定",
+    detail: "激活后会生成当前设备可用的 license_token，后续创建任务都基于这个状态。",
+    status: "先完成授权",
     href: "/activate",
     action: "去激活 →",
   },
@@ -30,7 +30,7 @@ const steps: HomeStep[] = [
     icon: "🧩",
     shortTitle: "安装插件并检测",
     title: "安装插件并完成检测",
-    copy: "下载 ZIP，加载目录，然后回到页面检测并绑定。",
+    copy: "下载 ZIP，加载目录，然后回到页面检测。",
     detail: "插件安装成功后，浏览器才具备接收任务和执行图片提取的能力。",
     status: "确认插件在线",
     href: "/install-plugin",
@@ -42,7 +42,7 @@ const steps: HomeStep[] = [
     shortTitle: "创建提取任务",
     title: "输入链接，创建任务",
     copy: "任务创建后会立即通知插件执行。",
-    detail: "支持淘宝、天猫链接。创建成功后，插件会按当前授权状态接手执行。",
+    detail: "支持淘宝、天猫链接。创建成功后，插件会直接接手执行。",
     status: "提交待提取链接",
     href: "/extract",
     action: "创建任务 →",
@@ -62,7 +62,7 @@ const steps: HomeStep[] = [
 
 const notes = [
   { icon: "📌", text: "建议顺序是先激活，再安装插件，再创建任务。" },
-  { icon: "🔍", text: "如果插件没有响应，先回帮助页检查安装和绑定状态。" },
+  { icon: "🔍", text: "如果插件没有响应，先回帮助页检查安装状态。" },
   { icon: "⚡", text: "日常使用通常只需要进入提取页和历史页。" },
 ]
 

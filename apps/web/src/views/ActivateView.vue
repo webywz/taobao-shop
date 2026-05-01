@@ -3,7 +3,6 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { redeemLicense } from '../lib/api'
-import { bindCurrentLicenseToPlugin, pingPlugin } from '../lib/plugin-bridge'
 
 const router = useRouter()
 const activationCode = ref('')
@@ -21,20 +20,7 @@ async function handleSubmit() {
 
   try {
     const license = await redeemLicense(activationCode.value.trim().toUpperCase())
-    try {
-      const ping = await pingPlugin()
-
-      if (ping.installed) {
-        const bindResult = await bindCurrentLicenseToPlugin()
-        message.value = bindResult.success
-            ? `激活成功并完成插件绑定，有效期 ${license.durationDays} 天`
-            : `激活成功，有效期 ${license.durationDays} 天，请手动检查插件绑定`
-      } else {
-        message.value = `激活成功，有效期 ${license.durationDays} 天，请先安装插件`
-      }
-    } catch {
-      message.value = `激活成功，有效期 ${license.durationDays} 天，请确认插件已安装`
-    }
+    message.value = `激活成功，有效期 ${license.durationDays} 天`
 
     ElMessage.success('激活成功')
     setTimeout(() => {

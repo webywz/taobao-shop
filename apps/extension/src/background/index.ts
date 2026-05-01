@@ -4,17 +4,18 @@ import {
   getDeviceId,
   getDeviceToken,
   getInstallationId,
-  getLicenseToken,
   setDeviceId,
-  setDeviceToken,
-  setLicenseToken
+  setDeviceToken
 } from "../shared/storage"
 import { API_BASE_URL } from "../shared/config"
 import { EXTRACTOR_VERSION, EXTENSION_VERSION } from "../shared/version"
 
 const POLL_ALARM_NAME = "task-poll"
 const TAB_LOAD_TIMEOUT_MS = 60000
+const TASK_EVENTS_RETRY_MS = 5000
 let pollInFlight = false
+let taskEventsAbortController: AbortController | null = null
+let taskEventsConnecting = false
 
 function ensurePollAlarm() {
   chrome.alarms.create(POLL_ALARM_NAME, {
@@ -105,6 +106,18 @@ type DownloadedAsset = ExtractedAsset & {
   ext: string
   mimeType: string
   originalSourceUrl: string
+}
+
+type PollResult = {
+  success: boolean
+  claimedTaskId?: string
+  errorCode?: string
+  errorMessage?: string
+}
+
+type DeviceEvent = {
+  type?: string
+  taskId?: string
 }
 
 function sleep(ms: number) {
@@ -374,6 +387,12 @@ async function ensureDeviceRegistered() {
   const existingDeviceId = await getDeviceId()
 
   if (existingDeviceId) {
+    const existingDeviceToken = await getDeviceToken()
+
+    if (existingDeviceToken) {
+      void ensureTaskEvents(existingDeviceToken)
+    }
+
     return existingDeviceId
   }
 
@@ -396,6 +415,7 @@ async function ensureDeviceRegistered() {
   const payload = await response.json()
   await setDeviceId(payload.deviceId)
   await setDeviceToken(payload.deviceToken)
+  void ensureTaskEvents(payload.deviceToken)
 
   return payload.deviceId as string
 }
@@ -582,9 +602,100 @@ async function executeTask(task: QueuedTask, deviceId: string, deviceToken: stri
   )
 }
 
-async function pollNextTask() {
-  if (pollInFlight) {
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "unknown error"
+}
+
+async function consumeTaskEvents(deviceToken: string, signal: AbortSignal) {
+  const eventsUrl = `${API_BASE_URL}/v1/devices/events?token=${encodeURIComponent(deviceToken)}`
+  const response = await fetch(eventsUrl, {
+    headers: {
+      Accept: "text/event-stream"
+    },
+    signal
+  })
+
+  if (!response.ok || !response.body) {
+    throw new Error(`device events unavailable: ${response.status}`)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+
+  while (!signal.aborted) {
+    const { done, value } = await reader.read()
+
+    if (done) {
+      break
+    }
+
+    buffer += decoder.decode(value, {
+      stream: true
+    })
+
+    const chunks = buffer.split("\n\n")
+    buffer = chunks.pop() ?? ""
+
+    for (const chunk of chunks) {
+      const dataLine = chunk
+        .split("\n")
+        .find((line) => line.startsWith("data: "))
+
+      if (!dataLine) {
+        continue
+      }
+
+      const event = JSON.parse(dataLine.slice(6)) as DeviceEvent
+
+      if (event.type === "TASK_CREATED") {
+        void pollNextTask()
+      }
+    }
+  }
+}
+
+async function ensureTaskEvents(deviceToken: string) {
+  if (taskEventsAbortController || taskEventsConnecting) {
     return
+  }
+
+  taskEventsConnecting = true
+  const controller = new AbortController()
+  taskEventsAbortController = controller
+
+  try {
+    await consumeTaskEvents(deviceToken, controller.signal)
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      console.warn("device events connection failed", error)
+    }
+  } finally {
+    if (taskEventsAbortController === controller) {
+      taskEventsAbortController = null
+    }
+
+    taskEventsConnecting = false
+
+    if (!controller.signal.aborted) {
+      globalThis.setTimeout(() => {
+        void (async () => {
+          const latestToken = await getDeviceToken()
+
+          if (latestToken) {
+            await ensureTaskEvents(latestToken)
+          }
+        })()
+      }, TASK_EVENTS_RETRY_MS)
+    }
+  }
+}
+
+async function pollNextTask(): Promise<PollResult> {
+  if (pollInFlight) {
+    return {
+      success: true
+    }
   }
 
   pollInFlight = true
@@ -592,11 +703,16 @@ async function pollNextTask() {
   try {
     const deviceId = await ensureDeviceRegistered()
     const deviceToken = await getDeviceToken()
-    const licenseToken = await getLicenseToken()
 
-    if (!deviceId || !deviceToken || !licenseToken) {
-      return
+    if (!deviceId || !deviceToken) {
+      return {
+        success: false,
+        errorCode: "DEVICE_NOT_READY",
+        errorMessage: "插件设备身份还没有准备好"
+      }
     }
+
+    void ensureTaskEvents(deviceToken)
 
     const response = await fetch(`${API_BASE_URL}/v1/extract/tasks/queue/next`, {
       headers: {
@@ -605,16 +721,31 @@ async function pollNextTask() {
     })
 
     if (response.status === 204) {
-      return
+      return {
+        success: true
+      }
+    }
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "")
+      return {
+        success: false,
+        errorCode: "QUEUE_FETCH_FAILED",
+        errorMessage: body || `拉取任务失败：${response.status}`
+      }
     }
 
     const task = (await response.json()) as QueuedTask
 
     try {
       await executeTask(task, deviceId, deviceToken)
+      return {
+        success: true,
+        claimedTaskId: task.taskId
+      }
     } catch (error) {
       console.error("task execution failed", error)
-      const errorMessage = error instanceof Error ? error.message : "unknown error"
+      const errorMessage = getErrorMessage(error)
       const errorCode =
         errorMessage === "AUTH_REQUIRED"
           ? "AUTH_REQUIRED"
@@ -626,7 +757,30 @@ async function pollNextTask() {
             ? "PRODUCT_NOT_FOUND"
             : "UPLOAD_FAILED"
 
-      await markTaskFailed(task, deviceToken, error, errorCode)
+      try {
+        await markTaskFailed(task, deviceToken, error, errorCode)
+      } catch (failError) {
+        console.error("mark task failed request failed", failError)
+      }
+
+      return {
+        success: false,
+        claimedTaskId: task.taskId,
+        errorCode,
+        errorMessage
+      }
+    }
+  } catch (error) {
+    const errorMessage = getErrorMessage(error)
+    console.error("poll next task failed", error)
+
+    return {
+      success: false,
+      errorCode: errorMessage === "Failed to fetch" ? "API_UNREACHABLE" : "POLL_FAILED",
+      errorMessage:
+        errorMessage === "Failed to fetch"
+          ? `无法连接后端服务 ${API_BASE_URL}，请确认 API 已启动`
+          : errorMessage
     }
   } finally {
     pollInFlight = false
@@ -662,43 +816,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "PLUGIN_STATUS") {
     void (async () => {
       const deviceId = await getDeviceId()
-      const licenseToken = await getLicenseToken()
       sendResponse({
         installed: true,
-        bound: Boolean(deviceId && licenseToken),
-        deviceId
-      })
-    })()
-    return true
-  }
-
-  if (message?.type === "BIND_LICENSE") {
-    void (async () => {
-      const deviceId = await ensureDeviceRegistered()
-      const response = await fetch(
-        `${API_BASE_URL}/v1/devices/${deviceId}/bind`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            licenseToken: message.payload.licenseToken
-          })
-        }
-      )
-
-      if (!response.ok) {
-        sendResponse({
-          success: false
-        })
-        return
-      }
-
-      await setLicenseToken(message.payload.licenseToken)
-      void pollNextTask()
-      sendResponse({
-        success: true,
+        ready: Boolean(deviceId),
         deviceId
       })
     })()
@@ -708,10 +828,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "TRIGGER_POLL") {
     void (async () => {
       ensurePollAlarm()
-      await pollNextTask()
-      sendResponse({
-        success: true
-      })
+      sendResponse(await pollNextTask())
     })()
     return true
   }

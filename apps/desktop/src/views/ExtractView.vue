@@ -52,7 +52,7 @@ async function handleCreate() {
           📦 提取商品图片
         </h3>
         <p class="text-sm text-gray-500 mb-6">
-          输入商品链接，创建提取任务并查看处理结果。
+          输入商品链接，创建提取任务，插件将立即接手执行。
         </p>
 
         <form class="space-y-4" @submit.prevent="handleCreate">
@@ -86,7 +86,7 @@ async function handleCreate() {
             支持淘宝 / 天猫
           </span>
           <span class="inline-flex items-center px-2.5 py-0.5 rounded-full font-medium bg-gray-100 text-gray-800">
-            无需插件绑定
+            创建任务后立即通知插件拉取
           </span>
         </div>
 

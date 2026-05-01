@@ -14,7 +14,7 @@ export default function Popup() {
         return
       }
 
-      setStatus(response.bound ? "bound" : "installed")
+      setStatus(response.ready ? "ready" : "installed")
     })
 
     chrome.runtime.sendMessage({ type: "PLUGIN_PING" }, (response) => {
@@ -28,33 +28,16 @@ export default function Popup() {
     setWakeMessage(null)
 
     try {
-      await chrome.runtime.sendMessage({ type: "TRIGGER_POLL" })
-    } catch {
-      // Ignore polling failures and keep the page wake path available.
-    }
+      const response = await chrome.runtime.sendMessage({ type: "TRIGGER_POLL" })
 
-    const [activeTab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true
-    })
-
-    if (!activeTab?.id || !activeTab.url) {
-      setWakeMessage("没有找到当前标签页")
-      return
-    }
-
-    try {
-      const url = new URL(activeTab.url)
-
-      if (!["localhost", "127.0.0.1"].includes(url.hostname)) {
-        setWakeMessage("请先切回本地调试页面")
+      if (response?.success === false) {
+        setWakeMessage(response.errorMessage || "插件拉取任务失败")
         return
       }
 
-      await chrome.tabs.reload(activeTab.id)
-      setWakeMessage("当前页面已刷新，请回到网页重新检测插件")
+      setWakeMessage("已请求插件立即拉取任务")
     } catch {
-      setWakeMessage("当前标签页地址不可用")
+      setWakeMessage("插件拉取任务失败，请检查后端服务是否已启动")
     }
   }
 
@@ -80,7 +63,7 @@ export default function Popup() {
           cursor: "pointer"
         }}
       >
-        唤醒当前页面
+        立即拉取任务
       </button>
       {wakeMessage ? <p style={{ margin: "8px 0 0" }}>{wakeMessage}</p> : null}
     </div>

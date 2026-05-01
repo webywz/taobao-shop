@@ -1,15 +1,10 @@
 "use client"
 
-import { getStoredLicenseToken } from "./api"
-
-type BridgeRequestType = "PLUGIN_PING" | "PLUGIN_STATUS" | "BIND_LICENSE" | "TRIGGER_POLL"
+type BridgeRequestType = "PLUGIN_PING" | "PLUGIN_STATUS" | "TRIGGER_POLL"
 
 type BridgePayloadMap = {
   PLUGIN_PING: Record<string, never>
   PLUGIN_STATUS: Record<string, never>
-  BIND_LICENSE: {
-    licenseToken: string
-  }
   TRIGGER_POLL: Record<string, never>
 }
 
@@ -20,11 +15,7 @@ type BridgeResponseMap = {
   }
   PLUGIN_STATUS: {
     installed: boolean
-    bound: boolean
-    deviceId?: string | null
-  }
-  BIND_LICENSE: {
-    success: boolean
+    ready: boolean
     deviceId?: string | null
   }
   TRIGGER_POLL: {
@@ -92,18 +83,6 @@ export async function pingPlugin() {
 
 export async function getPluginStatus() {
   return sendBridgeMessage("PLUGIN_STATUS", {})
-}
-
-export async function bindCurrentLicenseToPlugin() {
-  const licenseToken = getStoredLicenseToken()
-
-  if (!licenseToken) {
-    throw new Error("当前没有可绑定的 license token")
-  }
-
-  return sendBridgeMessage("BIND_LICENSE", {
-    licenseToken
-  })
 }
 
 export async function triggerPluginPoll() {

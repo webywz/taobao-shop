@@ -1,4 +1,6 @@
+import asyncio
 import datetime
+import json
 import secrets
 from fastapi import HTTPException
 from app.database import database, create_id, plus_days, detect_platform, hash_activation_code
@@ -19,6 +21,7 @@ class DatabaseStore:
     def __init__(self):
         self.db = database
         self.storage = oss_storage
+        self.device_event_queues = set()
 
     def _get_bearer_token(self, authorization: str | None) -> str:
         if not authorization or not authorization.startswith("Bearer "):
@@ -365,6 +368,32 @@ class DatabaseStore:
             "receivedAt": _to_iso(datetime.datetime.now(datetime.timezone.utc))
         }
 
+    def _broadcast_device_event(self, event: dict):
+        payload = json.dumps(event, ensure_ascii=False)
+
+        for queue in list(self.device_event_queues):
+            if queue.full():
+                continue
+
+            queue.put_nowait(payload)
+
+    async def device_event_stream(self, token: str):
+        await self.get_device_by_token(f"Bearer {token}")
+        queue = asyncio.Queue(maxsize=20)
+        self.device_event_queues.add(queue)
+
+        try:
+            yield "event: ready\ndata: {}\n\n"
+
+            while True:
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=25)
+                    yield f"event: task\ndata: {payload}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            self.device_event_queues.discard(queue)
+
     async def create_task(self, input_data: dict, authorization: str | None, admin_token: str | None = None):
         license_info = await self._resolve_management_license(authorization, admin_token)
         platform = detect_platform(input_data["sourceUrl"])
@@ -388,6 +417,12 @@ class DatabaseStore:
                 "cat": created_at
             }
         )
+
+        self._broadcast_device_event({
+            "type": "TASK_CREATED",
+            "taskId": task_id,
+            "createdAt": _to_iso(created_at)
+        })
 
         return {
             "taskId": task_id,
@@ -509,18 +544,15 @@ class DatabaseStore:
 
     async def next_task(self, authorization: str | None):
         device = await self.get_device_by_token(authorization)
-        if not device["licenseId"]:
-            return None
 
         row = await self.db.fetch_one(
             """
             select id, platform, source_url, task_token
             from tasks
-            where license_id = :lid and status = 'pending'
+            where status = 'pending'
             order by created_at asc
             limit 1
             """,
-            {"lid": device["licenseId"]}
         )
         if not row:
             return None
@@ -545,9 +577,6 @@ class DatabaseStore:
     async def claim_task(self, task_id: str, input_data: dict, authorization: str | None):
         device = await self.get_device_by_token(authorization)
         task = await self._get_task_record_by_token(task_id, input_data["taskToken"])
-
-        if task["license_id"] != device["licenseId"]:
-            raise HTTPException(status_code=401, detail="task not available for device")
 
         await self.db.execute(
             "update tasks set status = 'claimed', device_id = :did where id = :tid",

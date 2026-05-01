@@ -61,6 +61,14 @@ async function readErrorMessage(response: Response, fallback: string) {
   }
 }
 
+async function apiFetch(path: string, init: RequestInit, fallback: string) {
+  try {
+    return await fetch(`${API_BASE_URL}${path}`, init)
+  } catch {
+    throw new Error(`${fallback}：无法连接后端服务 ${API_BASE_URL}，请确认 API 已启动`)
+  }
+}
+
 function getAuthHeaders() {
   const licenseToken = getStoredLicenseToken()
 
@@ -74,7 +82,7 @@ function getAuthHeaders() {
 }
 
 export async function redeemLicense(activationCode: string): Promise<License> {
-  const response = await fetch(`${API_BASE_URL}/v1/licenses/redeem`, {
+  const response = await apiFetch("/v1/licenses/redeem", {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -82,7 +90,7 @@ export async function redeemLicense(activationCode: string): Promise<License> {
     body: JSON.stringify({
       activationCode
     })
-  })
+  }, "激活失败")
 
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, "激活失败"))
@@ -98,14 +106,14 @@ export function getStoredLicenseToken() {
 }
 
 export async function createTask(input: CreateTaskRequest) {
-  const response = await fetch(`${API_BASE_URL}/v1/extract/tasks`, {
+  const response = await apiFetch("/v1/extract/tasks", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...Object.fromEntries(getAuthHeaders().entries())
     },
     body: JSON.stringify(input)
-  })
+  }, "创建任务失败")
 
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, "创建任务失败"))
