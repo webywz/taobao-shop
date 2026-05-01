@@ -115,10 +115,6 @@ export interface RegisterDeviceRequest {
   extensionVersion: string
 }
 
-export interface BindLicenseRequest {
-  licenseToken: string
-}
-
 export interface CreateTaskRequest {
   sourceUrl: string
 }

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import router as api_router
 from .database import init_db, close_db
 
-app = FastAPI(title="TB PDD Image SaaS API")
+app = FastAPI(title="TB Image SaaS API")
 
 app.add_middleware(
     CORSMiddleware,

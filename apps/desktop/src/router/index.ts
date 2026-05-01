@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { getStoredLicenseToken } from '../lib/api'
+import { clearStoredLicenseToken, getCurrentLicense, getStoredLicenseToken } from '../lib/api'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -35,11 +35,33 @@ const router = createRouter({
   ]
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const hasLicense = Boolean(getStoredLicenseToken())
 
-  if (to.path.startsWith('/activate') && hasLicense) {
+  if (to.path.startsWith('/activate')) {
+    if (!hasLicense) {
+      return true
+    }
+
+    try {
+      await getCurrentLicense()
+    } catch {
+      clearStoredLicenseToken()
+      return true
+    }
+
     return '/extract'
+  }
+
+  if (!hasLicense) {
+    return '/activate'
+  }
+
+  try {
+    await getCurrentLicense()
+  } catch {
+    clearStoredLicenseToken()
+    return '/activate'
   }
 
   return true

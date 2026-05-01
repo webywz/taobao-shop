@@ -32,13 +32,6 @@ function handleLogout() {
                 <span class="mr-1">🗝️</span> 卡密管理
               </router-link>
               <router-link
-                to="/install-plugin"
-                class="inline-flex items-center px-1 pt-1 text-sm font-medium"
-                :class="route.path.startsWith('/install-plugin') ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700 hover:border-gray-300'"
-              >
-                <span class="mr-1">🧩</span> 插件
-              </router-link>
-              <router-link
                 to="/extract"
                 class="inline-flex items-center px-1 pt-1 text-sm font-medium"
                 :class="route.path.startsWith('/extract') ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700 hover:border-gray-300'"
@@ -50,7 +43,7 @@ function handleLogout() {
                 class="inline-flex items-center px-1 pt-1 text-sm font-medium"
                 :class="route.path.startsWith('/tasks') ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700 hover:border-gray-300'"
               >
-                <span class="mr-1">📋</span> 历史
+                <span class="mr-1">📋</span> 提取历史
               </router-link>
             </nav>
           </div>

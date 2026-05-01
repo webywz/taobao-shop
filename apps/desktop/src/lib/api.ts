@@ -39,6 +39,7 @@ async function readErrorMessage(response: Response, fallback: string) {
       const payload = (await response.json()) as {
         message?: string | string[]
         error?: string
+        detail?: string | string[]
       }
 
       if (Array.isArray(payload.message) && payload.message.length) {
@@ -51,6 +52,14 @@ async function readErrorMessage(response: Response, fallback: string) {
 
       if (typeof payload.error === "string" && payload.error.trim()) {
         return payload.error
+      }
+
+      if (Array.isArray(payload.detail) && payload.detail.length) {
+        return payload.detail.join("；")
+      }
+
+      if (typeof payload.detail === "string" && payload.detail.trim()) {
+        return payload.detail
       }
     }
 
@@ -81,6 +90,21 @@ function getAuthHeaders() {
   return headers
 }
 
+function isLicenseExpiredMessage(message: string) {
+  return message.includes("license expired") || message.includes("license not found")
+}
+
+async function throwApiError(response: Response, fallback: string): Promise<never> {
+  const message = await readErrorMessage(response, fallback)
+
+  if (response.status === 401 && isLicenseExpiredMessage(message)) {
+    clearStoredLicenseToken()
+    throw new Error("卡密已过期或失效，请重新激活")
+  }
+
+  throw new Error(message)
+}
+
 export async function redeemLicense(activationCode: string): Promise<License> {
   const response = await apiFetch("/v1/licenses/redeem", {
     method: "POST",
@@ -93,7 +117,7 @@ export async function redeemLicense(activationCode: string): Promise<License> {
   }, "激活失败")
 
   if (!response.ok) {
-    throw new Error(await readErrorMessage(response, "激活失败"))
+    await throwApiError(response, "激活失败")
   }
 
   const payload = (await response.json()) as License
@@ -103,6 +127,23 @@ export async function redeemLicense(activationCode: string): Promise<License> {
 
 export function getStoredLicenseToken() {
   return localStorage.getItem(LICENSE_STORAGE_KEY)
+}
+
+export function clearStoredLicenseToken() {
+  localStorage.removeItem(LICENSE_STORAGE_KEY)
+}
+
+export async function getCurrentLicense() {
+  const response = await apiFetch("/v1/licenses/current", {
+    cache: "no-store",
+    headers: getAuthHeaders()
+  }, "获取授权状态失败")
+
+  if (!response.ok) {
+    await throwApiError(response, "获取授权状态失败")
+  }
+
+  return (await response.json()) as License
 }
 
 export async function createTask(input: CreateTaskRequest) {
@@ -116,7 +157,7 @@ export async function createTask(input: CreateTaskRequest) {
   }, "创建任务失败")
 
   if (!response.ok) {
-    throw new Error(await readErrorMessage(response, "创建任务失败"))
+    await throwApiError(response, "创建任务失败")
   }
 
   return (await response.json()) as {
@@ -131,7 +172,7 @@ export async function getTask(taskId: string) {
   })
 
   if (!response.ok) {
-    throw new Error(await readErrorMessage(response, "获取任务失败"))
+    await throwApiError(response, "获取任务失败")
   }
 
   return normalizeTask((await response.json()) as Task)
@@ -150,7 +191,7 @@ export async function requestArchive(taskId: string, retentionDays: 3 | 7 | 30) 
   })
 
   if (!response.ok) {
-    throw new Error(await readErrorMessage(response, "触发 ZIP 失败"))
+    await throwApiError(response, "触发 ZIP 失败")
   }
 
   return (await response.json()) as TaskArchive
@@ -167,7 +208,7 @@ export async function convertTask(taskId: string, input: ConvertTaskRequest) {
   })
 
   if (!response.ok) {
-    throw new Error(await readErrorMessage(response, "任务格式转换失败"))
+    await throwApiError(response, "任务格式转换失败")
   }
 
   return response.json()
@@ -184,7 +225,7 @@ export async function convertAsset(assetId: string, input: ConvertAssetRequest) 
   })
 
   if (!response.ok) {
-    throw new Error(await readErrorMessage(response, "单图格式转换失败"))
+    await throwApiError(response, "单图格式转换失败")
   }
 
   return response.json()
@@ -197,7 +238,7 @@ export async function listTasks() {
   })
 
   if (!response.ok) {
-    throw new Error(await readErrorMessage(response, "获取历史任务失败"))
+    await throwApiError(response, "获取历史任务失败")
   }
 
   const payload = (await response.json()) as {

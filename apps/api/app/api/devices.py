@@ -25,11 +25,6 @@ async def device_events(token: str):
     )
 
 
-@router.post("/{device_id}/bind")
-async def bind_license(device_id: str, request: Request):
-    input_data = await request.json()
-    return await store.bind_license(device_id, input_data)
-
 @router.post("/{device_id}/heartbeat")
 async def heartbeat(device_id: str, request: Request, authorization: Optional[str] = Header(None)):
     input_data = await request.json()

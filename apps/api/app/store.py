@@ -248,6 +248,9 @@ class DatabaseStore:
         if not row:
             raise HTTPException(status_code=401, detail="license not found")
 
+        if self._is_expired(row["expires_at"]):
+            raise HTTPException(status_code=401, detail="license expired")
+
         return {
             "licenseId": row["id"],
             "licenseToken": row["token"],
@@ -319,20 +322,6 @@ class DatabaseStore:
             "deviceId": device_id,
             "deviceToken": device_token,
             "status": "active"
-        }
-
-    async def bind_license(self, device_id: str, input_data: dict):
-        license_info = await self.get_license_by_token(input_data["licenseToken"])
-        await self.db.execute(
-            "update devices set license_id = :lid where id = :did",
-            {"lid": license_info["licenseId"], "did": device_id}
-        )
-        # Using execute, the result might not be the row count exactly in asyncpg via databases,
-        # but let's assume it works for updating.
-        return {
-            "deviceId": device_id,
-            "licenseId": license_info["licenseId"],
-            "status": "bound"
         }
 
     async def heartbeat(self, device_id: str, input_data: dict, authorization: str | None):

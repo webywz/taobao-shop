@@ -50,6 +50,7 @@ async function readErrorMessage(response: Response, fallback: string) {
       const payload = (await response.json()) as {
         message?: string | string[]
         error?: string
+        detail?: string | string[]
       }
 
       if (Array.isArray(payload.message) && payload.message.length) {
@@ -62,6 +63,14 @@ async function readErrorMessage(response: Response, fallback: string) {
 
       if (typeof payload.error === "string" && payload.error.trim()) {
         return payload.error
+      }
+
+      if (Array.isArray(payload.detail) && payload.detail.length) {
+        return payload.detail.join("；")
+      }
+
+      if (typeof payload.detail === "string" && payload.detail.trim()) {
+        return payload.detail
       }
     }
 

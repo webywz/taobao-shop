@@ -34,19 +34,8 @@ const router = createRouter({
       component: () => import('../views/TaskDetailView.vue')
     },
     {
-      path: '/help',
-      name: 'help',
-      component: () => import('../views/HelpView.vue')
-    },
-    {
-      path: '/activate',
-      name: 'activate',
-      component: () => import('../views/ActivateView.vue')
-    },
-    {
-      path: '/install-plugin',
-      name: 'install-plugin',
-      component: () => import('../views/InstallPluginView.vue')
+      path: '/:pathMatch(.*)*',
+      redirect: '/admin/codes'
     }
   ]
 })
